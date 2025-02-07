@@ -1,0 +1,190 @@
+---
+title: "Week 02 - linear regression"
+output:
+  html_document: 
+    theme: readable
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Blood pressure
+
+We will work on a small dataset on blood pressure with the following variables:
+
+* Blood pressure (mm Hg)  
+* Age (years)  
+* Weight (grams)
+* Blood pressure class (4 levels)
+
+The Blood pressure class has 4 levels
+
+* Low: <90
+* Ideal: 90-120
+* Pre-high blood pressure: >120-140
+* High bp: >140
+
+
+```{r}
+
+library(tidyverse)
+
+df <- read_csv(file = "blood_pressure.csv") %>%
+  select(-class)
+
+df
+
+```
+
+## Regression with multiple variables
+
+>Q1: Do a full regression model with and without interaction
+
+You should predict blood pressure from age and weight.
+
+How much of the variation is explained by the two models?
+
+Is the interaction significant?
+
+bp= bo+b1*age+b2*weight + error
+
+```{r}
+
+model1 <- lm(bp ~ age + weight, data = df)
+summary(model1)
+
+```
+
+And with interaction:
+
+```{r}
+model2 <- lm(bp ~ age * weight, data = df)
+summary(model2)
+
+```
+
+To make the comparison:
+
+```{r}
+summary(model1)$adj.r.squared  # Model without interaction
+summary(model2)$adj.r.squared  # Model with interaction
+summary(model2)$coefficients
+
+
+```
+They explain basically the same variation and adding the interaacion does not change anything, is not significant.
+
+---
+
+>Q2: Do you see anything wrong with the model?
+
+Yep - we're fishing for a residual plot...
+
+```{r}
+plot(model1$fitted.values, residuals(model1), 
+     main = "Residuals vs. Fitted",
+     xlab = "Fitted Values", 
+     ylab = "Residuals", 
+     pch = 20)
+abline(h = 0, col = "red")
+
+library(lmtest)
+bptest(model1)
+
+```
+
+There is homocedasticity
+
+Check for normality: 
+
+```{r}
+qqnorm(residuals(model1))
+qqline(residuals(model1), col = "red")  # Normality line
+shapiro.test(residuals(model1))
+
+
+
+```
+The data is very normal, tbh I dont see any problem
+
+---
+
+>Q3: What is the predicted bp of an typical 35 kg 12 year old boy and a 60 year old fat man (250 kg)?
+
+```{r}
+new_data <- data.frame(age = c(12, 60), weight = c(35000, 250000))
+predicted_bp <- predict(model1, newdata = new_data)
+print(predicted_bp)
+```
+
+
+
+---
+
+# The ALS data
+
+>Q4: What is the estimated performance (RMSE) of a full linear model using all predictors (without interaction)
+
+Hint: repeated cross validation, I suggest 5 runs of 10 fold CV.
+
+Hint 2: lm(y ~ .) means lm(y ~ "all other columns in the dataset).
+
+If you are up for it: also get the training RMSE (by fitting all data and predicting on same data).
+
+
+```{r, warning=F, message=F}
+
+als_data <- read_rds("ALS_progression_rate.1822x370.rds")
+
+als_data <- als_data %>% 
+  filter(!is.na(dFRS))
+
+# Cargar librerías necesarias
+library(tidyverse)
+library(caret)
+
+
+# 3️⃣ Definir control para validación cruzada (10-fold CV, repetido 5 veces)
+cv_control <- trainControl(method = "repeatedcv", 
+                           number = 10,  # 10 folds
+                           repeats = 5)  # 5 repeticiones
+
+# 4️⃣ Definir la fórmula del modelo (usar todas las variables predictoras)
+model_formula <- dFRS ~ .
+
+# 5️⃣ Ajustar el modelo con regresión lineal y validación cruzada
+lm_cv_model <- train(model_formula, 
+                     data = als_data, 
+                     method = "lm", 
+                     trControl = cv_control, 
+                     metric = "RMSE")
+
+# 6️⃣ Imprimir resultados del modelo
+print(lm_cv_model)
+
+# 7️⃣ Obtener el RMSE en validación cruzada
+cv_rmse <- lm_cv_model$results$RMSE
+cat("RMSE en validación cruzada:", mean(cv_rmse), "\n")
+
+# 8️⃣ Ajustar el modelo sin validación cruzada (para obtener RMSE en training)
+lm_train_model <- lm(model_formula, data = als_data)
+
+# 9️⃣ Calcular RMSE en datos de entrenamiento
+train_predictions <- predict(lm_train_model, newdata = als_data)
+train_rmse <- sqrt(mean((als_data$dFRS - train_predictions)^2))
+
+cat("RMSE en datos de entrenamiento:", train_rmse, "\n")
+
+
+```
+
+```{r}
+plot(model1)
+```
+
+---
+
+
+---
+
+# Well done!
+
