@@ -1,0 +1,296 @@
+---
+title: "Week 01. Statistical & Machine Leaning in Bioinformatics "
+output: 
+  html_document: 
+      theme: readable
+      toc: yes
+editor_options: 
+  chunk_output_type: console
+--- 
+
+# Learning goals of this exercise
+
+The point of this exercise is to understand  10-fold cross validation (CV) well, by doing it manually with a simple linear model.
+
+# Introduction to cross validation
+
+When we do cross validation (CV) we divide the dataset into folds of approximately equal size, that can then be iterated through and used as the test part of the dataset where the rest can be used as training data.
+
+In the end you then have 10 estimates of performance, one for each fold. 
+
+These are combined into a single number, the cross-validated performance.
+
+But this number is just an estimate. If you divided your data into 10 different chunks you would get a slightly different estimate.
+
+You can do this by using set.seed() and sample() to get different folds.
+
+# Discussion point/things to think about now
+
+Discuss what you think will happen with the CV error compared to the observed training error?
+
+Discuss what will happen if we do 2 fold CV instead? (think amount of data used for training/testing)
+
+Discuss what will happen if we do leave one out CV instead? (What is the cost/benefit)
+
+# The exercise
+
+## Read the data:
+
+NOTE!!! You should copy the ALS data into the same folder as this rmd file.
+
+```{r, warning=F, message=F}
+
+library(tidyverse)
+
+theme_set(theme_classic())
+
+als <- read_rds("ALS_progression_rate.1822x370.rds")
+
+als <- als %>% 
+  filter(!is.na(dFRS))
+
+```
+
+# Divide the dataset in to folds
+
+The first part of doing CV is to divide the dataset in to 10 equal size folds.
+
+We suggest you do this by creating a vector that holds 10 different values (1..10).
+
+The vector should be of the same length as your number of rows in your data.
+
+HINT:
+
+```{r}
+
+set.seed(0)
+
+cvfolds <- cut(1:nrow(als), breaks = 10, labels = F)
+cvfolds
+# Aqui arriba lo q ha hecho es simplemente crear un vector donde se obtienen tantos numeros como observaciones nrow(als_data), y estos numeros van del 1 al 10 (breaks)
+
+
+rows      <- which(cvfolds==1)
+rows
+
+# Aquí arriba lo q ha hecho es sacarte los indices de lo q en el futuro seran las observaciones de test data. es decir, tenemos un vector del mismo tamaño q el numero de obs que nuestro data, este vector tiene numeros del 1 al 10. con which sacamos todos los indices de los q son 1. con esos indices accedemos los indices de als_data y esos son nuestros testdata
+
+# Test part of data for fold 1
+testdata  <- als[rows, ]
+
+# recuerda q als es una matriz y para acceder a datos de una matriz usamos [rows, columns]
+
+# Training part of data for fold 2
+traindata <- als[-rows, ]
+
+# Test fold estimate
+mean(als$value[rows])
+mean(als$value[cvfolds==1])
+mean(als$value[cvfolds==2])
+
+# If you want to shuffle the cvfolds you can sample() them
+cvfolds <- sample(cvfolds)
+cvfolds
+rows      <- which(cvfolds==1)
+rows
+
+# Now you can see that the folder are different. 
+mean(als$value[rows])
+mean(als$value[cvfolds==1])
+mean(als$value[cvfolds==2])
+
+
+
+```
+
+## Q1: Now do this for the ALS dataset
+
+Call the vectors that holds the folds for "cvfolds"
+
+
+
+# Iterate through these folds, fit to training fold and test of test fold
+
+For each fold:
+
+* Get the `testdata` (data in the current fold)
+* Get the `trainingdata` (the rest of the data)
+* Fit a simple linear model on the `trainingdata`
+* Predict on the `testdata`
+* Save the predictions
+
+```{r, warning=F}
+
+als_data <- als
+predicted <- rep(NA, nrow(als_data))
+
+for (i in 1:10){
+  rows      <- which(cvfolds==i)
+  testdata  <- als_data[rows,]
+  traindata <- als_data[-rows,]
+  fit       <- lm(dFRS ~ ., data=traindata)
+  tmp       <- predict(fit, newdata=testdata)
+  predicted[rows] <- tmp
+}
+
+head(predicted)
+rm(tmp)
+
+```
+
+# Calculate the estimated test error
+
+## Q2: Calculate the RMSE of the predictions.
+
+The most obvious error you could calculate here is root mean squared error, but other errors could be relevant as well.
+
+Note how we now NEVER use the same datapoint for both TRAINING and TESTING at the same time.
+
+Each datapoint is only predicted once (when it is in the test fold).
+
+
+```{r, warning=F}
+
+observed  <- als_data$dFRS
+
+mean(observed)
+se    <- (observed-predicted)^2
+mse   <- mean(se)
+(rmse <- sqrt(mse))
+
+```
+
+# A new run: Shuffle your folds then run the CV again
+
+Now we basically just make a new random partition of our data into 10 chunks
+
+```{r, warning=F}
+
+cvfolds <- cut(1:nrow(als_data), breaks = 10, labels = F)
+
+tibble(x=1:length(cvfolds), y=cvfolds) %>%
+  ggplot(aes(x=x,y=y, color=factor(y))) + 
+  geom_point()
+
+set.seed(0)
+cvfolds <- sample(cvfolds)
+
+tibble(x=1:length(cvfolds), y=cvfolds) %>%
+  ggplot(aes(x=x,y=y, color=factor(y))) + 
+  geom_point()
+
+```
+
+## Q3: Now run the cross validation again and get the RMSE
+
+This time you should use a new partition of the data into 10 folds.
+```{r}
+cvfolds <- sample(cvfolds)
+
+als_data <- als
+predicted <- rep(NA, nrow(als_data))
+
+for (i in 1:10){
+  rows      <- which(cvfolds==i)
+  testdata  <- als_data[rows,]
+  traindata <- als_data[-rows,]
+  fit       <- lm(dFRS ~ ., data=traindata)
+  tmp       <- predict(fit, newdata=testdata)
+  predicted[rows] <- tmp
+}
+
+head(predicted)
+rm(tmp)
+
+observed  <- als_data$dFRS
+
+mean(observed)
+se    <- (observed-predicted)^2
+mse   <- mean(se)
+(rmse <- sqrt(mse))
+```
+
+
+## Q4: Why did you get a different RMSE?
+
+bv we sampled
+
+# Collect all these steps into a function
+
+```{r}
+
+cv<-function(dataset, k, model){
+  
+cvfolds <- cut(1:nrow(dataset), breaks = k, labels = F)
+cvfolds <- sample(cvfolds)
+
+
+predicted <- rep(NA, nrow(dataset))
+
+for (i in 1:10){
+  rows      <- which(cvfolds==i)
+  testdata  <- dataset[rows,]
+  traindata <- dataset[-rows,]
+  fit       <- lm(dFRS ~ ., data=traindata)
+  tmp       <- predict(fit, newdata=testdata)
+  predicted[rows] <- tmp
+}
+
+rm(tmp)
+
+observed  <- dataset$dFRS
+
+mean(observed)
+se    <- (observed-predicted)^2
+mse   <- mean(se)
+(rmse <- sqrt(mse))
+
+print(rmse)}
+
+```
+
+
+## Q5: Now you should program a function that do all of the steps and return your cross validated RMSE.
+
+This function should be able to take a dataset and a number of folds, so you are able to run 5 or 10 fold CV
+
+Make sure to return all the error estimates you chose to calculate above.
+
+Test that it works for 2, 5 and 10 folds.
+
+Make at least 3 runs with different seeds for k=2,5,10
+
+
+## Q6: Why do you think the estimated RMSE is WORSE for low k?
+
+
+# Why we can NEVER trust the training error
+
+You have now carefully calculated the cross validated performance of using all predictors to predict the response.
+
+My guess is that your estimate of RMSE is around 0.6.
+
+You will see how the training performance LOOKS BETTER than the ACTUAL performace.
+
+NEVER TRUST THE TRAINING ERROR!!
+
+```{r, warning=F}
+
+cvfolds <- cut(seq_len(nrow(als_data)), breaks = 10, labels = F)
+
+rows      <- which(cvfolds==1)
+testdata  <- als_data[rows,]
+traindata <- als_data[-rows,]
+fit       <- lm(dFRS~., data=traindata)
+
+# Train RMSE
+predicted <- predict(fit,newdata = traindata)
+observed  <- traindata$dFRS
+sqrt(mean((observed-predicted)^2))
+
+# Test RMSE
+predicted <- predict(fit,newdata = testdata)
+observed  <- testdata$dFRS
+sqrt(mean((observed-predicted)^2))
+
+```
