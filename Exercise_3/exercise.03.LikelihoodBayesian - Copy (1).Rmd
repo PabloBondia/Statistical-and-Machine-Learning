@@ -1,0 +1,270 @@
+---
+title: "Statistical & Machine Learning in Bioinformatics"
+subtitle: "Week 3: Intro to Bayesian vs Likelihood"
+author: "Thomas B."
+output:
+  html_document:
+    theme: paper
+    code_folding: show
+    toc: true
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Goals for the theoretical exercise & R session this week 
+
+* Start to think about how we use a generative model , aka as $F_{\theta}()$ for data, $X$, and how we can infer $\theta$ from $X$: 
+
+![](visuals/HoHu_GenerativeModel_for_Data.png){width=200}
+
+
+credits : Holmes and Huber 
+
+
+* Get used to data inference with Likelihood and Bayesian analysis, test your intuition beyond math formulas
+
+* Play with the beta distribution often used a as prior distribution for proportions
+
+* Simulate as a way to approximate a (likelihood or) posterior distribution
+
+* Summarize a posterior distribution 
+
+
+Note 
+This session implies that you have read and digested the section on Bayesian thinking in chapter 2 of the `modern stats for modern biology` by  Holmes & Huber
+Here is the online textbook material: <https://www.huber.embl.de/msmb/02-chap.html#bayesian-thinking>
+
+Another  good extra read for much more in depth on the beta-binomial framework: <https://www.bayesrulesbook.com/chapter-3.html>
+
+
+
+# The beta-binomial model in a nutshell:
+
+To recap very very briefly the Bayes approach, the three ingredients are :
+
+The prior on $\theta$ the underlying proportion of the binomial distribution is Beta distributed 
+
+More precisely, the prior distribution $f(\theta)$ on $\theta$:
+$$
+f(\theta) = \frac{\Gamma(\alpha + \beta)}{\Gamma(\alpha)\Gamma(\beta)}\theta^{\alpha - 1}(1-\theta)^{\beta - 1}
+$$
+
+The likelihood of the data ( $y$ "sucess" outcomes out of $n$ trials) under the binomial model is the probability of the data (here $Y= y$) given the model parameter(s) (here $\theta$):
+
+$$
+L(\theta|y) = Prob(data| \theta) = {n \choose y} \theta^{y} (1-\theta)^{n-y}
+$$
+
+
+The posterior $\theta | (Y = y)$ is also Beta distributed ... In Bayesian jargon when prior and posterior distribution come from the same "family" we say that they *conjugate*. 
+
+$$
+\begin{split}
+Y \, |\, \theta \ & \sim \text{Bin}(n, \theta) \\
+\theta & \sim \text{Beta}(\alpha, \beta) \\
+\end{split} \;\; \Rightarrow \;\; 
+\theta | (Y = y) \sim \text{Beta}(\alpha + y, \beta + n - y) \; .
+$$
+
+
+# Set up for the exercise
+
+Let's imagine a concrete situation where 300 individuals that tested `+` for SARS-cov2 are then characterized for the presence of a specific corona variant (such as the infamous B.1.1.7 aka "variant of public concern" that started to spread like wildfire in the UK and then Ireland .. and then ). Out of 300 people tested and sequenced, 40 carry the variant
+
+## Q1: write a `loglikelihood` R function for the example above 
+
+The function of theta that returns for a dataset 
+where $k$ observations in a given category out of $n$ observations 
+
+
+---
+
+## Beta Priors for the frequency of variants
+
+Here are 3 different possible prior distributions
+  
+```{r}
+thetas <- seq(0, 1, by = 0.001)
+theta <- thetas[1:500]
+dfbetas <- tibble(theta,
+           db1= dbeta(theta,1,7),
+           db2 = dbeta(theta, 5, 35),
+           db3 = dbeta(theta, 50, 350))
+require(reshape2)
+datalong  <-  melt(dfbetas, id="theta")
+head(datalong)
+require(ggthemes)
+
+ggplot(datalong) +
+geom_line(aes(x = theta,y=value,colour=variable), size=1.4) +
+theme(legend.title=element_blank()) +
+scale_colour_viridis_d(name  ="Priors",
+                          labels=c("B(1,7)", "B(5,35)","B(50,350)"))+ 
+theme_minimal(base_size = 15)
+
+```
+
+## Which prior would you use for the Bayesian analysis ? 
+
+Here you can see that different priors have probability mass in the 0.1-0.2 range for $\theta$ and lets say this is the range of frequencies one can "a priori" expect given similar data obtained. But clearly some priors are more peaked than others ... and it is legitimate to wonder which one should use. 
+In the case of the SARS-cov variant there is the info brought by previous studies in nearby countries, etc.
+So for now we will use the prior that is "intermediate" between  very peaked and and quite flat : Beta(5,35)
+
+Here are many draws in that prior distribution
+```{r}
+rtheta <- rbeta(n = 100000, shape1 = 5, shape2 = 35)
+qplot(rtheta) + 
+  theme_minimal()#quick and dirty ggplplot on a vector
+
+```
+
+
+
+
+## Simulating data under the model 
+Model has an underlying prior for $\theta$ the frequency of a given variant 
+
+And for each model (seeded by a choice of $\theta$  in the prior), we can generate an observed number of a given variant when 300 individuals are "observed" or characterized.
+Below  `rtheta` is a vector storing many draws in a Beta prior
+`y` is a vector of observed values according to each $\theta$ chosen in the prior. Note that `rbinom()` is implicitly vectorized so you can pass as argument to for instance  prob a single number (that will be reused `n` times or a vector):
+
+```{r}
+rtheta <- rbeta(n = 100000, shape1 = 5, shape2 = 35)
+hist(rtheta) #quick and dirty plot on a vector
+
+y <- rbinom(n = length(rtheta), prob =  rtheta, size = 300)
+
+hist(y, breaks = 50, col = "orange", main = "", xlab = "Yos", probability = T)
+
+```
+
+## Q2: Take break and reflect:   
+
+Can you explain to your team mate how are these two vectors 
+
+* `y` 
+
+*  `rtheta` 
+
+related to $P(D)$ and $P(\theta)$ in the notes on Bayesian inference and the celebrated formula :
+
+$$P(\theta|D) = \frac {P(D|\theta) P(\theta)}{P(D)}$$
+
+
+---
+
+## Simulating to approximate the Posterior aka $P(\theta|y)$
+You know in this case ( beta conjugate with binomial) that the prosterior is beta distributed. But lets have some intuition by using simulations to find the posterior
+
+## Q3: Approximate the posterior distribution of $\theta$ 
+
+Hint. we have just simulated a large number of datasets under a model where we first sample the prior for $\theta$ and then based on that simulate 1 dataset ( a yobs).
+
+Use the (sub) set of simulations (stored in `y`) to approximate the posterior,  "by conditioning on the data" .
+
+## Q4: Superimpose / compare with the theoretical posterior
+
+
+
+---
+
+
+## Exploiting the posterior 
+
+We summarize the posterior distribution by its mean / median for instance
+
+Check with the direct simulation from the theoretical posterior
+
+```{r}
+thetaPostMC <- rbeta(n = 1e6, 45, 295)
+mean(thetaPostMC)
+```
+
+Or check by using the theoretical mean of a Beta distribution ( google it!)
+
+### The credible intervals 
+
+## Q5: Use the posterior distribution to get credible intervals matching these statements 
+
+What is the posterior probability that the variant frequency is:
+
+* less than 10% ? (we got it moderate wrong)
+* more than 20% (we got it completely wrong)
+
+
+---
+
+## Exploring sensitivity to the choice of prior 
+
+## Q6: Redo the Bayesian analysis replacing our original prior with a softer prior (less peaked), meaning that we use less prior information. 
+
+How much does this change the final result?
+
+
+---
+
+## Q7: Go **extreme** and use a flat prior ... 
+
+What choice of shape parameters do you need ot make to get a completely flat prior ? 
+
+> Discuss how much weight a flat prior has in the posterior distribution
+
+## Inference using solely the Likelihood principle
+
+Write the likelihood function for the data as a function of $\theta$ and visualize it as a function of the proportion $\theta$.
+
+
+Can you also approximate the (rescaled) likelihood by using the simulations for a given $f(\theta)$ ? 
+Hint if you use a "completely flat" prior you expect that it will be essentially like a likelihood analysis. 
+But you can also all $N$ simulations for a given \theta interval, count how many simulations yielded a given $y_{obs}$ ($n_{y_{obs}$) and approximate the likelihood as 
+
+$$ Prob(Y=y_{obs}|\theta) \approx \frac{n_{y_{obs}}}{N} $$:
+
+Apply that recipe to approximate the likelihood in intervals of width $2 \epsilon = 0.05$
+
+Start with for instance Prob(Y=y_{obs}|\theta = 0.1) \approx \frac{n_{y_{obs}}}{N}
+
+```{r}
+sims <- tibble(thetas = rtheta,
+       yobs = y)
+
+sims %>%
+  filter(yobs == 40) %>%
+  filter(thetas < 0.11) %>%
+  filter(thetas > 0.09) %>%
+  tally()
+
+sims %>%
+  # filter(yobs == 40) %>%
+  filter(thetas < 0.11) %>%
+  filter(thetas > 0.09) %>%
+  tally()
+
+```
+
+Then you reuse that idea to get the likelihood over a grid of values...
+
+# Comparing Likelihood and Bayesian (if there is time)
+
+## is the mode of a posterior distribution coinciding with the MLE ? 
+
+You know what MLE for a binomial is ...
+
+You know (or you google), what is the mode of a Beta distribution (that your maximum posterior estimate). Do they ever exactly match ? 
+
+## Compare the 95% confidence interval with the 95%  credible interval 
+
+For more on credible intervals:
+<https://en.wikipedia.org/wiki/Credible_interval>
+
+You use the likelihood to profile to get a confidence interval for $\theta$.
+
+
+---
