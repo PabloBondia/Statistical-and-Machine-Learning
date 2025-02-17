@@ -56,7 +56,7 @@ $$
 f(\theta) = \frac{\Gamma(\alpha + \beta)}{\Gamma(\alpha)\Gamma(\beta)}\theta^{\alpha - 1}(1-\theta)^{\beta - 1}
 $$
 
-The likelihood of the data ( $y$ "sucess" outcomes out of $n$ trials) under the binomial model is the probability of the data (here $Y= y$) given the model parameter(s) (here $\theta$):
+The likelihood of the data ( $y$ "success" outcomes out of $n$ trials) under the binomial model is the probability of the data (here $Y= y$) given the model parameter(s) (here $\theta$):
 
 $$
 L(\theta|y) = Prob(data| \theta) = {n \choose y} \theta^{y} (1-\theta)^{n-y}
@@ -82,6 +82,31 @@ Let's imagine a concrete situation where 300 individuals that tested `+` for SAR
 
 The function of theta that returns for a dataset 
 where $k$ observations in a given category out of $n$ observations 
+```{r}
+
+loglikelihood <- function(theta, y, n) {
+  if (theta <= 0 || theta >= 1) {
+    return(-Inf)  # Log-likelihood is undefined for theta outside (0,1)
+  }
+  return(y * log(theta) + (n - y) * log(1 - theta))
+}
+
+# Example usage:
+y <- 40  # Number of successes
+n <- 300 # Number of trials
+theta_vals <- seq(0.01, 0.99, by = 0.01)
+loglik_vals <- sapply(theta_vals, loglikelihood, y = y, n = n)
+
+# Plotting the log-likelihood
+library(ggplot2)
+ggplot(data.frame(theta = theta_vals, loglik = loglik_vals), aes(x = theta, y = loglik)) +
+  geom_line(color = "blue") +
+  labs(title = "Log-Likelihood for Binomial Model",
+       x = expression(theta),
+       y = "Log-Likelihood") +
+  theme_minimal()
+
+```
 
 
 ---
@@ -161,9 +186,76 @@ $$P(\theta|D) = \frac {P(D|\theta) P(\theta)}{P(D)}$$
 ---
 
 ## Simulating to approximate the Posterior aka $P(\theta|y)$
+
+```{r}
+# Parameters for the prior (Beta distribution)
+alpha <- 5
+beta <- 35
+
+# Observed data: 40 successes out of 300 trials
+y <- 40
+n <- 300
+
+# Number of simulations
+n_sim <- 100000
+
+# Simulate values for theta from the Beta prior
+theta_samples <- rbeta(n_sim, shape1 = alpha, shape2 = beta)
+
+# Simulate the data (number of successes) for each theta
+y_simulated <- rbinom(n_sim, size = n, prob = theta_samples)
+
+# Now we find the values of theta that match the observed data y (this is the likelihood step)
+# In Bayesian inference, we use the likelihood function (binomial) to weight the prior samples
+likelihood <- dbinom(y, size = n, prob = theta_samples)
+
+# Normalize the likelihood so that it sums to 1
+posterior_weights <- likelihood / sum(likelihood)
+
+# The posterior distribution is now the weighted distribution of theta_samples
+posterior_samples <- sample(theta_samples, size = n_sim, prob = posterior_weights, replace = TRUE)
+
+# Plot the posterior distribution
+hist(posterior_samples, probability = TRUE, col = rgb(0, 0, 1, 0.3), main = "Posterior Distribution of Theta", xlab = "Theta", breaks = 50)
+
+# Add a line showing the Beta posterior (Beta(5 + y, 35 + n - y))
+curve(dbeta(x, shape1 = alpha + y, shape2 = beta + n - y), add = TRUE, col = "red", lwd = 2)
+
+```
+
+
 You know in this case ( beta conjugate with binomial) that the prosterior is beta distributed. But lets have some intuition by using simulations to find the posterior
 
 ## Q3: Approximate the posterior distribution of $\theta$ 
+
+```{r}
+# Parameters for the prior (Beta distribution)
+alpha <- 5
+beta <- 35
+
+# Number of simulations
+n_sim <- 100000
+
+# Simulate prior samples for theta
+theta_samples <- rbeta(n_sim, shape1 = alpha, shape2 = beta)
+
+# Simulate the observed data for each theta (Binomial likelihood)
+y_simulated <- rbinom(n_sim, size = 300, prob = theta_samples)
+
+# Now find the likelihoods based on the observed data (y = 40)
+likelihood <- dbinom(40, size = 300, prob = theta_samples)
+
+# Normalize the likelihoods to get the posterior weights
+posterior_weights <- likelihood / sum(likelihood)
+
+# Resample theta values based on the posterior weights
+posterior_samples <- sample(theta_samples, size = n_sim, prob = posterior_weights, replace = TRUE)
+
+# Plot the posterior distribution
+hist(posterior_samples, probability = TRUE, col = rgb(0, 0, 1, 0.3), main = "Posterior Distribution of Theta", xlab = "Theta", breaks = 50)
+
+```
+
 
 Hint. we have just simulated a large number of datasets under a model where we first sample the prior for $\theta$ and then based on that simulate 1 dataset ( a yobs).
 
@@ -172,6 +264,19 @@ Use the (sub) set of simulations (stored in `y`) to approximate the posterior,  
 ## Q4: Superimpose / compare with the theoretical posterior
 
 
+```{r}
+thetaPostEmp <- rtheta[ y == 40 ]
+length(thetaPostEmp) 
+
+length(thetaPostEmp) / length(rtheta) # acceptance rate
+
+hist(thetaPostEmp, breaks = 50, col = "chartreuse4", main = "",
+  probability = TRUE, xlab = expression("posterior"~theta))
+
+densPostTheory  =  dbeta(thetas, 45, 295) #see posterior formulas
+lines(thetas, densPostTheory, type="l", lwd = 2, lty=3)
+
+```
 
 ---
 
@@ -191,6 +296,13 @@ Or check by using the theoretical mean of a Beta distribution ( google it!)
 
 ### The credible intervals 
 
+```{r}
+# Add the theoretical Beta distribution to the plot
+curve(dbeta(x, shape1 = 45, shape2 = 295), add = TRUE, col = "red", lwd = 2)
+
+```
+
+
 ## Q5: Use the posterior distribution to get credible intervals matching these statements 
 
 What is the posterior probability that the variant frequency is:
@@ -198,6 +310,18 @@ What is the posterior probability that the variant frequency is:
 * less than 10% ? (we got it moderate wrong)
 * more than 20% (we got it completely wrong)
 
+```{r}
+# Calculate the probability that theta is less than 0.1
+prob_less_than_10 <- mean(posterior_samples < 0.1)
+prob_less_than_10 
+sum(thetaPostMC<0.1)/1e6
+
+# Calculate the probability that theta is more than 0.2
+prob_more_than_20 <- mean(posterior_samples > 0.2)
+prob_more_than_20
+(1+sum(thetaPostMC>0.19))/(1+1e6)
+
+```
 
 ---
 
@@ -207,10 +331,101 @@ What is the posterior probability that the variant frequency is:
 
 How much does this change the final result?
 
+```{r}
+# Taken from the bayesrules package
+plot_beta_binomial <- function (alpha,
+                                beta,
+                                y,
+                                n){
+  
+
+  g <- ggplot(data = data.frame(x = c(0, 1)), aes(x)) +
+    labs(x = expression(pi),
+         y = "density") +
+    scale_fill_manual("",
+                      values = c(prior = "#f0e442",
+                                 `(scaled) likelihood` = "#0071b2",
+                                 posterior = "#009e74"),
+                      breaks = c("prior",
+                                 "(scaled) likelihood",
+                                 "posterior"))
+  
+  
+    g <- g +
+      stat_function(fun = dbeta,
+                           args = list(shape1 = alpha,
+                                       shape2 = beta)) +
+      stat_function(fun = dbeta,
+                    args = list(shape1 = alpha,
+                                shape2 = beta),
+                    geom = "area",
+                    alpha = 0.5,
+                    aes(fill = "prior"))
+    
+
+  
+    alpha_post <- alpha + y
+    beta_post <- beta + n - y
+    y_data <- y
+    like_scaled <- function(x) {
+      like_fun <- function(x) {
+        dbinom(x = y_data, size = n, prob = x)
+      }
+      scale_c <- integrate(like_fun, lower = 0, upper = 1)[[1]]
+      like_fun(x)/scale_c
+    }
+  
+    g <- g +
+      stat_function(fun = like_scaled) +
+      stat_function(fun = like_scaled,
+                    geom = "area",
+                    alpha = 0.5,
+                    aes(fill = "(scaled) likelihood"))
+  
+    g <- g +
+      stat_function(fun = dbeta,
+                    args = list(shape1 = alpha_post,
+                                shape2 = beta_post)) +
+      stat_function(fun = dbeta,
+                    args = list(shape1 = alpha_post,
+                                shape2 = beta_post),
+                    geom = "area", alpha = 0.5,
+                    aes(fill = "posterior")) +
+      ggtitle(paste0('a=', alpha, ', b=', beta))
+  g 
+}
+
+library(patchwork)
+a1 <- plot_beta_binomial(alpha = 5*7, beta = 35*7, y = 40, n = 300) + xlim(0, .25)
+a2 <- plot_beta_binomial(alpha = 5*3, beta = 35*3, y = 40, n = 300) + xlim(0, .25)
+a3 <- plot_beta_binomial(alpha = 5, beta = 35, y = 40, n = 300) + xlim(0, .25)
+a4 <- plot_beta_binomial(alpha = 5/2, beta = 35/2, y = 40, n = 300)+ xlim(0, .25)
+a5 <- plot_beta_binomial(alpha = 1, beta = 7, y = 40, n = 300)+ xlim(0, .25)
+a6 <- plot_beta_binomial(alpha = 1, beta = 1, y = 40, n = 300)+ xlim(0, .25)
+
+a1+a2+a3+a4+a5+a6+plot_layout(guides = "collect")&theme_minimal()&theme(legend.position = 'bottom')
+```
 
 ---
 
 ## Q7: Go **extreme** and use a flat prior ... 
+
+
+```{r}
+# Approximate likelihood by counting how often each theta leads to the observed y = 40
+sims <- tibble(thetas = rtheta, yobs = y)
+
+# Count how often yobs equals 40 for the theta values between 0.09 and 0.11
+approx_likelihood <- sims %>%
+  filter(yobs == 40) %>%
+  filter(thetas < 0.11 & thetas > 0.09) %>%
+  tally()
+
+# Output the approximate likelihood
+approx_likelihood
+
+```
+
 
 What choice of shape parameters do you need ot make to get a completely flat prior ? 
 
