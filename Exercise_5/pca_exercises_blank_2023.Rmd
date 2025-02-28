@@ -1,0 +1,331 @@
+---
+title: "PCA exercises"
+author: "Iker Rivas-González"
+date: "4/17/2020"
+output: html_document
+---
+
+# The Iris dataset
+
+```{r}
+
+library(tidyverse)
+
+```
+
+Using tibbles makes the everything cleaner.
+```{r}
+
+iris <- iris %>% as_tibble()
+Species <- iris$Species
+df <- iris %>% select(-Species)
+
+```
+
+
+**Perform PCA on the Iris dataset**
+
+scale. = TRUE: This means scaling each variable to have unit variance (standardizing the data).
+Standardization is important because PCA is sensitive to the scale of the variables.
+If one variable has a much larger range than another, it can dominate the PCA results.
+
+```{r}
+pca_iris <- prcomp(df, center = TRUE, scale. = TRUE)
+summary<-summary(pca_iris)
+
+
+```
+
+**Plot the principal components without the species labels first, and see if you can discern any patterns** 
+
+```{r}
+
+
+library(ggplot2)
+
+pc_df <- as_tibble(pca_iris$x)
+
+ggplot(pc_df, aes(x = PC1, y = PC2)) +
+  geom_point() +
+  labs(title = "PCA of Iris Dataset (Unlabeled)")
+
+```
+
+**Now try to plot it with the species labels. What do you see?**
+
+```{r}
+pc_df <- pc_df %>%
+  mutate(Species = Species)
+
+ggplot(pc_df, aes(x = PC1, y = PC2, color = Species)) +
+  geom_point() +
+  labs(title = "PCA of Iris Dataset (Labeled by Species)")
+
+```
+
+
+**Make a scree plot that shows the proportion of variance explained for each of the PCs, as well as a plot that shows the cumulative variance**
+
+```{r}
+library(ggplot2)
+
+# Extract the proportion of variance explained by each PC
+var_explained <- summary$importance[2, ]  # 2nd row is the proportion of variance
+
+# Create a data frame for plotting
+scree_data <- data.frame(PC = 1:length(var_explained), Variance = var_explained)
+
+# Plot the scree plot
+ggplot(scree_data, aes(x = PC, y = Variance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Scree Plot: Variance Explained by Each Principal Component",
+       x = "Principal Component",
+       y = "Proportion of Variance Explained") +
+  theme_minimal()
+
+
+
+
+```
+
+
+# Chimp dataset
+
+```{r}
+
+chimp.data <- read.table("ChimpFirst500SNPs.data") %>% 
+  as_tibble() %>% 
+  mutate_all(function(x) ifelse(x == '.', NA, x)) |> 
+  mutate_all(as.numeric)
+chimp.names <- as.vector( unlist(read.table("SpeciesNames.data")))
+
+```
+
+
+**Try to impute the missing data by using the mean or median**
+
+```{r}
+
+for (i in seq_along(chimp.data)) {
+  chimp.data[[i]][is.na(chimp.data[[i]])] <- median(chimp.data[[i]], na.rm = TRUE)
+}
+
+
+```
+
+**Perform PCA and explore the results. What do you see?**
+
+```{r}
+pca_chimp <- prcomp(chimp.data, center = TRUE, scale. = TRUE)
+summary2<-summary(pca_chimp)
+
+```
+
+
+**Make a scree plot that shows the proportion of variance explained for each of the PCs, as well as a plot that shows the cumulative variance**
+
+```{r}
+
+var_explained2 <- summary2$importance[2, ]  # 2nd row is the proportion of variance
+
+# Create a data frame for plotting
+scree_data <- data.frame(PC = 1:length(var_explained2), Variance2 = var_explained2)
+
+# Plot the scree plot
+ggplot(scree_data, aes(x = PC, y = Variance2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Scree Plot: Variance Explained by Each Principal Component",
+       x = "Principal Component",
+       y = "Proportion of Variance Explained") +
+  theme_minimal()
+
+```
+
+
+
+# Turtles
+
+Now that you are more familiar with `prcomp`, you can try to understand all of the elements in the output, and try to calculate them manually. To do so, we will use the turtle dataset from the MSMB book, which contains different measurements of turtle individuals. The last three columns are length measurements (in millimetres), whereas the first column is a factor variable that tells us the sex of each animal.
+
+```{r}
+
+turtles = read.table("./PaintedTurtles.txt", header = TRUE) |> 
+  tibble()
+turtles
+
+```
+
+
+**Calculate the correlation between the three numeric variables**
+
+```{r}
+cor(turtles[, 2:4])
+
+```
+
+**Compute the scatterplots for all pairs of variables**
+
+Hint: you can do it pairwise manually, using `ggpairs`, or using a 3D scatter plot.
+
+```{r}
+library(GGally)
+ggpairs(turtles[, 2:4])
+
+```
+
+**Scale the variables**
+
+So that all have a mean of 0 and a sd of 1. 
+
+Hint: you can do it manually, or using the `scale` function
+
+```{r}
+turtles_scaled <- as_tibble(scale(turtles[, 2:4]))
+
+
+```
+
+**Perform singular value decomposition**
+
+Hint: use the `svd` function.
+
+Additionally, prove that the assumptions of SVD are met, e.g., that the square of the loading coefficients (`svd$v`) sum to one.
+
+```{r}
+svd_turtles <- svd(as.matrix(turtles_scaled))
+svd_turtles
+
+```
+
+**Calculate the PC**
+
+Hint: multiply the data frame by the corresponding loading coefficients.
+
+Additionally, plot PC1 and PC2, colored by sex.
+
+```{r}
+rowSums(svd_turtles$v^2)
+
+
+```
+
+**Compute the PCs using prcomp and compare the output to what you manually derived**
+
+Hint: you can retrieve the names of all the elements of the object returned by `prcomp` using the function `names()`. 
+
+Additionally, build a scree plot with the proportion of variance explained by each of the PCs.
+
+```{r}
+PCs <- as.matrix(turtles_scaled) %*% svd_turtles$v
+turtles_pcs <- as_tibble(PCs) %>%
+  mutate(sex = turtles$sex)
+
+ggplot(turtles_pcs, aes(x = V1, y = V2, color = sex)) +
+  geom_point() +
+  labs(title = "PCA of Turtles")
+
+pca_turtles <- prcomp(turtles[, 2:4], center = TRUE, scale. = TRUE)
+summary(pca_turtles)
+var_explained <- pca_turtles$sdev^2 / sum(pca_turtles$sdev^2)
+ggplot(tibble(PC = 1:length(var_explained), Variance = var_explained), aes(x = PC, y = Variance)) +
+  geom_bar(stat = "identity", fill = "blue", alpha = 0.5) +
+  labs(title = "Scree Plot of Turtle PCA")
+
+
+```
+
+# Swiss Roll dataset
+
+The Swiss Roll dataset contains highly non-linear relationships. 
+
+**Try plotting the three variables of the data and get familiar with it. Maybe you can even plot a 3D graph?**
+
+```{r}
+
+labs <- rep(c("1","2","3","4"),each=400)
+df <- read.table("swissroll.dat") %>% as_tibble() 
+dat <- df %>% mutate(label = labs)
+
+library(plotly)
+
+plot_ly(data = dat, x = ~V1, y = ~V2, z = ~V3, color = ~label, type = "scatter3d", mode = "markers")
+
+
+```
+
+**Try out PCA on this dataset. Can you discern the four different labels?**
+
+```{r}
+pca_swissroll <- prcomp(dat[, 1:3], center = TRUE, scale. = TRUE)
+summary(pca_swissroll)
+
+pc_df <- as_tibble(pca_swissroll$x) %>%
+  mutate(Label = dat$label)
+
+ggplot(pc_df, aes(x = PC1, y = PC2, color = Label)) +
+  geom_point() +
+  labs(title = "PCA of Swiss Roll")
+
+
+
+```
+
+
+KERNEL PCA
+
+```{r}
+library(kernlab)
+library(ggplot2)
+library(dplyr)
+
+# Perform Kernel PCA with an RBF (Gaussian) kernel
+kpca_result <- kpca(~., data = dat[, 1:3], kernel = "rbfdot", kpar = list(sigma = 0.1))
+
+# Extract the transformed data
+kpca_proj <- as.data.frame(predict(kpca_result, dat[, 1:3]))
+
+# Rename columns to PC1, PC2, etc.
+colnames(kpca_proj) <- paste0("PC", seq_len(ncol(kpca_proj)))
+
+# Add labels for plotting
+kpca_df <- kpca_proj %>%
+  mutate(Label = dat$label)
+
+# Plot the first two principal components
+ggplot(kpca_df, aes(x = PC1, y = PC2, color = Label)) +
+  geom_point() +
+  labs(title = "Kernel PCA on Swiss Roll")
+
+
+```
+
+UMAP
+
+```{r}
+library(umap)
+
+umap_result <- umap(dat[, 1:3])
+umap_df <- as_tibble(umap_result$layout) %>%
+  mutate(Label = dat$label)
+
+ggplot(umap_df, aes(x = V1, y = V2, color = Label)) +
+  geom_point() +
+  labs(title = "UMAP on Swiss Roll")
+
+```
+
+
+T-SNE
+```{r}
+library(Rtsne)
+
+tsne_result <- Rtsne(dat[, 1:3], perplexity = 30, check_duplicates = FALSE)
+tsne_df <- as_tibble(tsne_result$Y) %>%
+  mutate(Label = dat$label)
+
+ggplot(tsne_df, aes(x = V1, y = V2, color = Label)) +
+  geom_point() +
+  labs(title = "t-SNE on Swiss Roll")
+
+```
+
