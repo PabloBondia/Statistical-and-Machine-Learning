@@ -1,0 +1,326 @@
+---
+title: "Week 07 in Statistical Machine Learning in Bioinformatics"
+subtitle: "classification I: logistic regression"
+author: "Thomas Bataillon"
+date: "Time Stamp last update: `r Sys.Date()`"
+output:
+  html_document:
+    theme: readable
+    code_folding: show
+    toc: true
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Goal of the session 
+
+* Get familiarized with how over fitting in n>p or n<<p works 
+
+* Exploring the tcga dataset
+
+* Exploring logistic regression and its use as for predicting tissue type (Normal or Cancerous) in the tcga dataset
+
+* Gearing up for submitting your first set of predictions on cancer 
+
+# A fake dataset with no signal 
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(knitr)
+theme_set(theme_minimal(base_size = 15, base_line_size = 1.5))
+
+set.seed(42)
+n_ind <- 300  # How many individuals in each class
+n_features <- 10^4 # How many spurious features ( aka predictors)
+
+fake_features <- rnorm(n = 2*n_ind*n_features) # 2*n_ind in total * n_features
+fake_df <- as_tibble(matrix(data = fake_features, ncol = n_features))
+dim(fake_df)
+rm(fake_features) # not needed --> cleanup
+
+reponse_binary <- as.factor(c(rep("Control", n_ind), rep("Case", n_ind)))
+reponse_score <- rnorm(n = 2*n_ind, mean = 10, sd = 2)
+length(reponse_score)
+pseudo_df  <- tibble(reponse_binary, fake_df)
+
+pseudo_df %>% select(1:6) %>% head() %>% kable("pandoc", digits = 2)
+
+```
+
+# A bit of tidyverse magic with `pivot_longer`
+
+First reorganize, amd lets pretend these features are gene expression data, typically expressed on log scale because gene expression ca vary byr 2-3 orders of magnitude.
+
+```{r}
+df_longer <- pivot_longer(data = pseudo_df,
+                          cols =2:(n_features+1),names_to = "Feature")
+dim(df_longer)
+names(df_longer) <-c("response", "Feature", "log10_gene_expr")
+head(df_longer) %>% knitr::kable(digits = 2)
+```
+
+Then summarize by gene:
+```{r}
+stats_byFeature_by_treatment <-df_longer %>%
+  group_by(Feature,response) %>%
+  summarize(n_obs = n(),   # just a check sample size
+            mean = mean(log10_gene_expr),
+            var = var(log10_gene_expr))
+
+head(stats_byFeature_by_treatment) %>% knitr::kable(digits = 2)
+```
+
+# More tidyverse  with `pivot_wider`
+
+and this time pivot wider ... to build a series of summaries per features ... 
+
+```{r}
+summary_features <-pivot_wider(data = stats_byFeature_by_treatment, 
+            names_from = response, 
+            values_from = c("n_obs","mean", "var"))
+
+head(summary_features) %>% knitr::kable(digits = 2)
+
+```
+
+# A standardized difference approach - aka the `t-test`
+
+This is the most celebrated statistic to look at differences between 2 groups 
+
+```{r}
+summary_features  <- summary_features %>%
+  mutate(mean_diff = mean_Case - mean_Control) %>%
+  mutate(se_diff = sqrt( (var_Case/n_obs_Case) +(var_Control/n_obs_Control)) ) %>%
+  mutate(t_welch = mean_diff / se_diff) %>%
+  arrange(-abs(t_welch)) %>%
+  {.}
+
+knitr::kable(summary_features[1:10, c(1,8,10)], col.names = c("gene", "Obs_diff", "t_obs"))
+
+```
+
+# The distribution of `t_obs` (under zero effect aka $H_0$)v
+
+```{r}
+ggplot(data = summary_features, aes(x=t_welch))+ 
+  geom_histogram(bins = 20, fill="cornflowerblue")+  # <--my kind of blue :)
+  xlab("standardized difference in Means vs. Controls")+
+  theme_minimal(base_size = 15)+
+  NULL
+
+
+```
+
+# Cherry picking: the best 2
+
+```{r}
+pseudo_df <- pseudo_df %>%
+  mutate(logistic01 = ifelse(reponse_binary == "Case", 0, 1))
+ 
+table(pseudo_df$logistic01)
+
+ggplot(pseudo_df, aes(x=V1608, y = V3630, color = reponse_binary)) +
+  geom_point(size=2, alpha=0.85)+
+  theme_minimal(base_size = 15)+
+  theme(legend.position = "bottom")+
+  NULL
+
+```
+# Predicting after cherry picking 2/n
+
+```{r}
+
+
+m1 <- glm(data = pseudo_df, formula = logistic01 ~ V1608 + V3630 ,  family = "binomial" )
+m0 <- glm(data = pseudo_df, formula = logistic01 ~ 1,  family = "binomial" )
+(1 - m1$deviance/m0$deviance)
+
+pseudo_df$magic <-m1$fitted.values
+ggplot(data = pseudo_df, aes(x=magic, fill = reponse_binary)) + 
+  geom_dotplot(binwidth = 0.0150)+ 
+  scale_fill_colorblind()+
+  xlab("2 logistic regression predictors") +
+  NULL
+
+
+```
+
+# Predicting after cherry picking 3/n
+
+## >Q00 explore how much prediction can be achieved using 5-10 carefully chosen predictors
+
+# Background on the  TCGA data 
+
+* The dataset we work on for the next weeks is a slice of the original tcga gene expression dataset. More precisely, here we use a random subset of 4000 genes out of ca 18000 genes from the initial dataset.
+
+* Each individual sample (`rowid`) has a matching metadata where a sample type (`reponse`: Normal / Cancer) are given along with a `tissue` type ( for the training part of the data)
+
+* The gene expression data comprising 4000 genes where log10(gene expression) is provided + 3 first principal components (aka `pc1`  `pc2` `pc3`)
+
+* About the PCs: `pc1` and `pc2` these 2 synthetic variables are orthogonal and account for ca 20% of the total variation in gene expression in the 4000 genes we use for prediction
+
+IMPORTANT: for some samples (1172 of them) the nature of the tissue (`reponse`) is not known (`NA`) and should be predicted (we will try various methods to do so this week and in the coming weeks)
+
+
+# 1. Loading the data:
+
+We will load the dataset 
+The file is a tible saved in R's rds format (with gz compression). Rds is the fastest format for writing and reading.
+
+Each row is one biological sample (one persons tissue)
+
+It contains info on the sample and pc1, pc2 and log10(1 + gene expression) data. 
+
+You will see that the response is unknown/missing for some of the samples (~20 percent of the data).
+
+The response column is recoded for the logictic regression:  
+* 0 = `Normal`, 
+* 1 = `Tumor`
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+getwd()
+tcgadf <- read_rds("miniTCGA.3349x4006.rds") 
+
+dim(tcgadf) # check this should be 3349 4007
+names(tcgadf)[1:30]
+
+tcgadf %>%
+  group_by(response) %>%
+  summarise(observations=n()) %>%
+  knitr::kable()
+
+
+tcgadf <- tcgadf %>%
+  mutate(sampletype=response, 
+         response=ifelse(test= response=="Tumor", yes = 1, no = 0 ))
+
+tcgadf %>%
+  group_by(response) %>%
+  summarise(observations=n()) %>%
+  knitr::kable()
+
+
+```
+
+## > Q0: First, think about the "structure" of the data: 
+
+* What are the predictors ? 
+
+Gene expression
+
+* what is the response variable you are interested in ? 
+
+cancer or normal tissue and what tissue
+
+* Are we in the n>>p, n>p, n~p, n<p or n<<p "domain"  ?
+
+
+we are in the n<p, we have less obs than variables
+
+# 2. vizualizing the TCGA dataset
+
+## > Q1: Do some simple graphical visualizations, 
+
+Explore to see how 2 gene expression levels or 2 pc of gene expression differ by Tissue and SampleType
+
+```{r}
+library(tidyverse)
+
+# Visualizing the relationship between two gene expressions by Tissue type (Normal/Tumor)
+ggplot(tcgadf, aes(x = DRP2.1821, y = ASAP2.8853, color = as.factor(response))) + 
+  geom_point(size = 2, alpha = 0.6) + 
+  labs(x = "Gene 1608 Expression", y = "Gene 3630 Expression", color = "Tissue Type") + 
+  theme_minimal(base_size = 15) + 
+  theme(legend.position = "bottom") +
+  ggtitle("Gene Expression by Tissue Type")
+
+# Visualizing the relationship between the first two principal components (pc1 and pc2) by Tissue type (Normal/Tumor)
+ggplot(tcgadf, aes(x = pc1, y = pc2, color = as.factor(response))) + 
+  geom_point(size = 2, alpha = 0.6) + 
+  labs(x = "Principal Component 1 (pc1)", y = "Principal Component 2 (pc2)", color = "Tissue Type") + 
+  theme_minimal(base_size = 15) + 
+  theme(legend.position = "bottom") +
+  ggtitle("PC1 vs PC2 by Tissue Type")
+
+```
+
+
+---
+
+> Q: draw "by eye" the boundaries between types (Normal / cancer) and tissue type
+
+# 3. Formatting preparing the data for using the classification methods
+
+
+```{r}
+library(tidyverse)
+
+# Filter the data to only include samples with a known response (SampleType)
+training_data <- tcgadf %>% 
+  filter(!is.na(response))  # Exclude samples where response is NA
+
+# Verify the number of samples with known response
+training_data %>%
+  group_by(response) %>%
+  summarise(observations = n()) %>%
+  knitr::kable()
+
+# Check dimensions of the resulting training dataset
+dim(training_data)  # This should show fewer rows than the original tcgadf
+
+```
+
+
+## > Q2: build a training set by filtering the data so you only have samples with SampleType known
+
+
+---
+
+
+# Part 4: Trying out classification methods
+
+Try out the logistic regression on the tcga dataset. If you are unsure about the R function glm() that is implementing logistic regression, then lookup the R labs of the classification chapter.
+
+
+## > Q3: Can you identify specific genes that are good at discriminating between types (normal / Cancer) overall and within a specific tissue ? 
+
+
+## > Q4: Explore how pc1 and pc2 can effectively summarize the info of 500 gene expression measurements 
+
+
+
+## > Q5: try and combine up to max 3 predictors to make your classification .. 
+
+To start, by limiting the number of predictors, the model is more easy to "interpret". Later on we will go "bananas" and increase the number of predictors if it is sensible to do so (see cross validation and model selection inthe coming weeks )
+
+
+
+---
+
+Hint: you could try  to use the `broom` package and use that to organize the results of different models.
+
+Note that the statistics computed by glance are different for `glm()` objects than for `lm()` (e.g. deviance rather than R^2 are reported). make sure you understand these terms and if in doubt ask your TA :)
+
+
+
+---
+
+# Part 5. looking at model fit 
+
+##> Q6: Make some visual presentation of the  glm fit
+
+use `ggplot()` to produce the equivalent of figure 4.2 of the book for the logistic regression model you chose.
+
+Hint: if you still struggle with all the arcane options of `ggplot()` try this post :)
+
+https://stackoverflow.com/questions/47080625/plotting-predictions-from-a-logistic-regression
+
+ 
+---
+
+# Well done! TOu are almost ready tomake your first round of predictions ?? !!
+
+

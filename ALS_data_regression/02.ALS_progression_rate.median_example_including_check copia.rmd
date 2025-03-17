@@ -1,0 +1,289 @@
+---
+output:
+  html_document:
+        theme: readable
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+
+library(tidyverse)
+
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds")  %>% tbl_df()
+
+df <- df %>% rename(response = dFRS)
+
+head(df)
+
+```
+
+# Split into training and prediction set
+
+```{r}
+
+set.seed(0)
+
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))                              
+
+dim(data_predict)
+dim(data_train)
+
+```
+
+# My code
+
+```{r}
+library(tidyverse)
+library(glmnet)
+library(caret)
+
+# Cargar datos
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds") %>% tbl_df()
+df <- df %>% rename(response = dFRS)
+
+# Dividir datos en entrenamiento y predicci??n
+set.seed(0)
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))
+
+# Dividir en conjunto de entrenamiento (80%) y prueba (20%)
+set.seed(0)
+trainfold <- data_train %>% sample_frac(size = 0.80)
+testfold  <- setdiff(data_train, trainfold)
+
+# Extraer matriz de caracter??sticas y vector respuesta
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+y_train <- trainfold$response
+x_test  <- model.matrix(response ~ ., testfold)[,-1]
+y_test  <- testfold$response
+
+# Definir funci??n para calcular RMSE
+eval_rmse <- function(model, x, y) {
+  preds <- predict(model, newx = x, s = "lambda.min")
+  sqrt(mean((y - preds)^2))
+}
+
+# Ridge Regression (alpha = 0)
+cv_ridge <- cv.glmnet(x_train, y_train, alpha = 0)
+rmse_ridge <- eval_rmse(cv_ridge, x_test, y_test)
+
+# Lasso Regression (alpha = 1)
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1)
+rmse_lasso <- eval_rmse(cv_lasso, x_test, y_test)
+
+# Elastic Net (alpha = 0.5)
+cv_elastic <- cv.glmnet(x_train, y_train, alpha = 0.5)
+rmse_elastic <- eval_rmse(cv_elastic, x_test, y_test)
+
+# Comparar RMSEs
+rmse_results <- tibble(
+  Model = c("Ridge", "Lasso", "Elastic Net"),
+  RMSE  = c(rmse_ridge, rmse_lasso, rmse_elastic)
+)
+
+print(rmse_results)
+
+
+```
+
+
+
+
+# Plot of testfold observed and predicted values and residuals
+ 
+
+
+
+```{r}
+library(tidyverse)
+library(glmnet)
+library(caret)
+
+# Cargar datos
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds") %>% tbl_df()
+df <- df %>% rename(response = dFRS)
+
+# Dividir datos en entrenamiento y predicci??n
+set.seed(0)
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))
+
+# Dividir en conjunto de entrenamiento (80%) y prueba (20%)
+set.seed(0)
+trainfold <- data_train %>% sample_frac(size = 0.80)
+testfold  <- setdiff(data_train, trainfold)
+
+# Extraer matriz de caracter??sticas y vector respuesta
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+y_train <- trainfold$response
+x_test  <- model.matrix(response ~ ., testfold)[,-1]
+y_test  <- testfold$response
+
+# Definir funci??n para calcular RMSE
+eval_rmse <- function(model, x, y) {
+  preds <- predict(model, newx = x, s = "lambda.min")
+  sqrt(mean((y - preds)^2))
+}
+
+# Ridge Regression (alpha = 0)
+cv_ridge <- cv.glmnet(x_train, y_train, alpha = 0)
+rmse_ridge <- eval_rmse(cv_ridge, x_test, y_test)
+
+# Lasso Regression (alpha = 1)
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1)
+rmse_lasso <- eval_rmse(cv_lasso, x_test, y_test)
+
+# Elastic Net Regression (alpha = 0.5)
+cv_elastic <- cv.glmnet(x_train, y_train, alpha = 0.5)
+rmse_elastic <- eval_rmse(cv_elastic, x_test, y_test)
+
+# Mostrar los RMSE para los tres modelos
+cat("RMSE for Ridge: ", rmse_ridge, "\n")
+cat("RMSE for Lasso: ", rmse_lasso, "\n")
+cat("RMSE for Elastic Net: ", rmse_elastic, "\n")
+
+# Predicci??n y creaci??n de tibble con valores observados, predichos y residuales para los tres modelos
+pred_ridge <- predict(cv_ridge, newx = x_test, s = "lambda.min")
+pred_lasso <- predict(cv_lasso, newx = x_test, s = "lambda.min")
+pred_elastic <- predict(cv_elastic, newx = x_test, s = "lambda.min")
+
+# Crear tibble con los valores observados, predichos y residuales
+pd <- tibble(
+  observed = y_test,
+  pred_ridge = pred_ridge,
+  pred_lasso = pred_lasso,
+  pred_elastic = pred_elastic
+) %>%
+  pivot_longer(cols = starts_with("pred_"), 
+               names_to = "model", 
+               values_to = "predicted") %>%
+  mutate(residual = observed - predicted)
+
+# Gr??fico combinado de observados vs predichos para los tres modelos con diferentes colores
+p1 <- ggplot(pd, aes(x = predicted, y = observed, color = model)) +
+  geom_point() +
+  theme_classic() +
+  labs(title = "Observed vs Predicted for Ridge, Lasso, and Elastic Net") +
+  scale_color_manual(values = c("red", "blue", "green")) +
+  theme(legend.title = element_blank())
+
+# Gr??fico combinado de residuos vs valores predichos para los tres modelos con diferentes colores
+p2 <- ggplot(pd, aes(x = predicted, y = residual, color = model)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Residuals vs Predicted for Ridge, Lasso, and Elastic Net") +
+  scale_color_manual(values = c("red", "blue", "green")) +
+  theme(legend.title = element_blank())
+
+# Mostrar ambos gr??ficos
+print(p1)
+print(p2)
+
+```
+
+
+
+# Predict the real unknown data
+
+First we fit the model to all of our known data
+
+Then we predict on the unknown data
+
+The predictions must have the following column and the row order must be the same as the original!
+
+* predicted (the predicted value)
+
+
+```{r}
+
+
+
+
+
+xx_train <- model.matrix(response ~ ., data_train)[,-1]
+yy_train <- data_train$response
+
+xx_test <- as.matrix(data_predict[, -1])
+
+dim(xx_train)
+dim(xx_test)
+cv_lasso <- cv.glmnet(xx_train, yy_train, alpha = 1)
+
+predicted <- predict(cv_lasso, newx = xx_test, s = "lambda.min")
+
+
+
+submission <- tibble(predicted)
+
+head(submission)
+
+```
+
+
+# Submitting your answer
+
+The following code will give us
+
+* your chosen team name
+* the name of the people on the team
+* your estimated RMSE (from train/test or CV or similar)
+* your predictions
+
+Please edit the values below .
+
+The filename of the output will be automated als_progression.TEAMNAME.rds
+
+Please - do not use space or funny letters in your team name.
+
+```{r}
+
+team_name        <- "team_pauet"
+team_people      <- c("Pablo_Bondia")
+team_error_rate  <- test_rmse
+team_predictions <- submission # This should be a tibble with a column called "predicted"
+
+#
+# Always run this code
+# If it fails you have done something wrong!
+#
+# Extract the columns needed
+team_predictions <- team_predictions %>% select(predicted)
+
+# Save all the stuff in one object
+write_rds(x = list(team_name, team_people, team_error_rate, team_predictions), 
+          file = paste("als_progression.", team_name, ".rds", sep=""))
+
+```
+
+# Checking format of all saved objects
+
+```{r}
+
+files   <- Sys.glob("als_progression.*.rds")
+results <- tibble(filename = files, team_name=NA, team_people=NA, team_rmse=NA,n=NA, mean=NA)
+
+for (i in 1:nrow(results)) {
+  x <- read_rds(file = as.character(results$filename[i]))
+  results$team_name[i]        <- x[[1]]
+  results$team_people[i]      <- paste(x[[2]], collapse=",", sep=" ")
+  results$team_rmse[i]        <- x[[3]]
+  y                           <- x[[4]]
+  results$n                   <- nrow(y)
+  results$mean                <- mean(y$predicted, na.rm = T)
+  results$submission[i]       <- list(x[[4]])
+}
+
+rm(x,y)
+
+results %>% select(-filename)
+
+results$submission[[1]]
+
+```
+
+# Upload your rds file!
+
+
