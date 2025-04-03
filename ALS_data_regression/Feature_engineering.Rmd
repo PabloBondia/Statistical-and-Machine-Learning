@@ -1,0 +1,57 @@
+---
+title: "Outliers_removal"
+author: "Pablo Bondia"
+date: "2025-04-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(caret)  # For model training
+library(glmnet)  # For elastic net
+library(ranger)  # For Random Forest
+library(gbm)  # For Gradient Boosting
+library(e1071)  # For SVM
+library(Metrics)  # For RMSE evaluation
+
+# Load the data
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds")  %>% tbl_df()
+
+# Rename the response variable
+df <- df %>% rename(response = dFRS)
+
+# Display the first few rows of the data
+head(df)
+
+```
+
+```{r}
+# Split data into training and prediction sets
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))
+
+# Check dimensions of both sets
+dim(data_predict)
+dim(data_train)
+
+```
+
+```{r}
+# Create training and test folds (80-20 split)
+set.seed(0)
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Create model matrices (without the response column)
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
+
+# Convert response variable to numeric vectors
+y_train <- trainfold$response
+y_test <- testfold$response

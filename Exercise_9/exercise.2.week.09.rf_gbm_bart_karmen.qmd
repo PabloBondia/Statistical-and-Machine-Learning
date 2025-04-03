@@ -1,0 +1,536 @@
+---
+title: "Week 09 Statistical Machine Learning in Bioinformatics: Tree based methods"
+author: "Palle Villesen"
+format:
+  html:
+    theme: cosmo
+    code-fold: true
+    code-tools: 
+      toggle: true
+      source: true
+    number-sections: true
+    toc: true
+    toc-location: left
+    page-layout: full
+    code-line-numbers: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+editor: source
+editor_options: 
+  chunk_output_type: console
+---
+
+# QMD - qhat is going on?!
+
+Well... I may be very slow to adapt to changes, but I'm slowly migrating stuff from Rmarkdown to Quarto.
+
+So... this week we're working in a "quarto" document - very similar to rmarkdown.
+
+If you want to know more: google.
+
+
+```{r, warning=F, message=F}
+
+library(tidyverse)
+theme_set(theme_classic())
+
+library(randomForest)
+library(gbm)
+library(BART)
+
+```
+
+# Aim of exercise
+
+For any practical purpose you will probably never use single regression/classification trees. So in this exercise we will NOT fit single trees.
+
+Instead you should familiarize yourself with the three ensembl methods from chapter 9:
+
+-   RandomForest
+-   Boosting
+-   BART (Bayesian something)
+
+We will first focus on doing regression (age) on the Karmen data. You worked on these with Lasso and Ridge regression.
+
+After you are done you can repeat the exercise - but focus on sex (classification) instead.
+
+Basically we have measured \~400 molecules in blood from healthy donors and we can try to predict the sex or age of the donor.
+
+Sex should be easy - age more difficult. For this exercise we will focus on the age as output/response.
+
+# Do the book labs!!!
+
+Before you continue, it is super important that you go through the book labs (8.3)
+
+They will give you the tools needed to do this exercise.
+
+. . .
+
+Have you done the book labs? If so, you should be able to continue here.
+
+# Data wrangling
+
+## Reading and reformatting data
+
+I code as as 0 and 1 and make it a factor.
+
+```{r}
+
+df  <- read_rds("karmen_data_with_sex_and_age.rds") 
+compounds  <- df %>% select(-age,-sex) %>% names()
+
+df$sex <- factor(df$sex-1)
+
+df <- df %>% select(age,sex,everything())
+
+(sex_data <- df %>% select(sex,all_of(compounds)))
+(age_data <- df %>% select(age, all_of(compounds)))
+
+rm(df)
+
+```
+
+## Create a training/test split
+
+```{r}
+
+set.seed(0)
+
+train <- sample(x = 1:nrow(age_data), size = round(0.8*nrow(age_data)))
+
+age_train <- age_data[train,]
+age_test  <- age_data[-train,]
+
+```
+
+## Data inspection
+
+Inspect the different variables.
+
+## Q1.1: How many predictors do we have?
+
+441
+------------------------------------------------------------------------
+
+## Q1.2: What is your intuition about the associations between the data and the reponse?
+
+I expect interaction between variables and nonlinearity, therefore, regression approaches are not adecuate. Methods seensitive to correlation between predictors are also not adecuate. 
+
+
+Think: do you expect linear relationships? Interactions? How many of the predictors do you think are associated with the two different responses?
+
+Questions like these may guide you in the direction of the model of choice!
+
+
+------------------------------------------------------------------------
+
+## Q1.3: What is the size of the train/test split?
+
+223 obs and 58 obs
+------------------------------------------------------------------------
+
+# RandomForest regression of age
+
+## Q2.1: Use the labs and train a random forest on the training set using 500 trees
+
+
+
+```{r}
+library(randomForest)
+
+set.seed(123)  # Ensure reproducibility
+
+# Fit Random Forest model
+rf_model <- randomForest(age ~ ., data = age_train, ntree = 500, importance = TRUE)
+
+# Print model summary
+print(rf_model)
+
+# Check variable importance
+importance(rf_model)
+varImpPlot(rf_model)
+
+```
+
+```{r}
+# Make predictions on test data
+age_pred <- predict(rf_model, newdata = age_test)
+
+# Compute RMSE (Root Mean Squared Error)
+rmse <- sqrt(mean((age_test$age - age_pred)^2))
+print(paste("RMSE:", round(rmse, 2)))
+
+# Plot actual vs predicted age
+plot(age_test$age, age_pred, 
+     xlab = "Actual Age", ylab = "Predicted Age", 
+     main = "Random Forest: Actual vs Predicted Age")
+abline(0,1, col="red")  # 45-degree reference line
+
+```
+
+
+randomForest(,..do.trace=T) will track progress
+
+Read the documentation for the randomForest() function.
+
+Also: there are many randomforest packages out there - for convenience we stick to the same one as the book.
+
+The randomforest algorithm selects random subsets of variables and samples, if you all use set.seed(0) before calling the function, then you will all get identical results. This may be useful ;)
+
+Personally I don't like the "formula interface" for these models, but do as you please.
+
+I would also advice you to look at the help for randomForest() and look at the arguments.
+
+Especially the x,y,xtest and ytest...
+
+AND!!!! Look at the "Value" section of the help. Look what kind of error measures you get back from the model...
+
+For regression: mse and "test" may be very interesting!
+
+And a note: you need to set keep.forest = T... (to keep the forest).
+
+```{r}
+
+library(randomForest)
+
+set.seed(0)
+
+xtrain <- age_train %>% select(-age)
+ytrain <- age_train$age
+xtest  <- age_test %>% select(-age)
+ytest  <- age_test$age
+
+
+```
+
+
+------------------------------------------------------------------------
+
+## Q2.2: Make a plot with tree number on x and estimated mse on y
+
+I normally code stuff like this:
+
+``` r
+
+rffit <- randomForest(x = xtrain, y=ytrain, keep.forest = T,
+                    xtest=xtest, ytest=ytest,
+                    ntree = 500, importance=T,
+                    do.trace = T
+                    )
+                    
+names(rffit)
+```
+
+```{r}
+# Train the Random Forest model while keeping track of test errors
+rffit <- randomForest(
+  x = age_train %>% select(-age),  # Predictor variables only
+  y = age_train$age,               # Response variable
+  xtest = age_test %>% select(-age),  # Test predictors
+  ytest = age_test$age,               # Test response
+  ntree = 500, 
+  importance = TRUE,
+  do.trace = TRUE
+)
+
+# Extract the number of trees and corresponding test set MSE
+tree_numbers <- 1:500
+test_mse <- rffit$test$mse  # Test Mean Squared Error at each tree
+
+# Plot tree number vs. MSE
+plot(tree_numbers, test_mse, type = "l",
+     xlab = "Number of Trees", ylab = "Test Set MSE",
+     main = "Random Forest: Number of Trees vs. Test MSE",
+     col = "blue", lwd = 2)
+
+# Highlight minimum MSE point
+min_mse_idx <- which.min(test_mse)
+points(tree_numbers[min_mse_idx], test_mse[min_mse_idx], col = "red", pch = 19)
+
+```
+
+------------------------------------------------------------------------
+
+## Q2.3: Do you have enough trees in your forest?
+
+Look at the plot - does it look like the error stabilizes?
+
+If so - ok.
+
+If not - you need more trees!
+
+
+------------------------------------------------------------------------
+
+## Q2.4: How is the importance distributed?
+
+I.e. does it look like many or few molecules are important?
+
+```{r}
+# Get feature importance from the Random Forest model
+importance_values <- importance(rffit)
+
+# Plot the feature importance
+varImpPlot(rffit, type = 1, main = "Feature Importance (Age Prediction)")
+
+```
+
+------------------------------------------------------------------------
+
+## Changing mtry (aka tuning the random forest)
+
+### Q2.5: Try different values for the mtry parameter and evaluate how it influences the estimated and test error rate
+
+mtry = Number of variables randomly sampled as candidates at each split.
+
+Note that the default values are different for classification (sqrt(p) where p is number of variables in x) and regression (p/3)
+
+What happens if you use all off them? (bagging) What happens if you use very few predictors for each split? (e.g. 1/10 of predictors)
+
+```{r}
+# Different values for mtry (number of predictors considered for each split)
+mtry_values <- c(1, 5, 10, 15, 20, 25, 30, ncol(age_train) - 1)
+
+# Placeholder for test MSE results
+test_mse_values <- numeric(length(mtry_values))
+
+# Loop through each mtry value and evaluate model performance
+for(i in 1:length(mtry_values)) {
+  mtry_val <- mtry_values[i]
+  
+  # Train the Random Forest model with the current mtry
+  rf_model <- randomForest(
+    x = age_train %>% select(-age),  # Predictor variables only
+    y = age_train$age,               # Response variable
+    ntree = 500,                     # Number of trees
+    mtry = mtry_val,                 # Set mtry value
+    importance = TRUE, 
+    do.trace = TRUE
+  )
+  
+  # Make predictions on the test set
+  age_pred <- predict(rf_model, newdata = age_test %>% select(-age))  # Exclude 'age' from the test set
+  
+  # Calculate the test MSE
+  test_mse_values[i] <- mean((age_test$age - age_pred)^2)
+  
+  # Print progress
+  print(paste("mtry =", mtry_val, "Test MSE:", round(test_mse_values[i], 2)))
+}
+
+# Plot test MSE for different mtry values
+plot(mtry_values, test_mse_values, type = "b", 
+     xlab = "mtry (Number of Predictors at Each Split)", 
+     ylab = "Test Set MSE", 
+     main = "Effect of mtry on Test MSE", 
+     col = "blue", pch = 19, lwd = 2)
+
+
+```
+ 
+
+
+------------------------------------------------------------------------
+
+# Boosting regression of age
+
+Again, go through the book labs (if you haven't done so.)
+
+## Q3.1: Use the labs and train a gbm() on the data set using 1000 trees
+
+```{r}
+# Load the required package
+library(gbm)
+
+set.seed(0)
+
+# Train the GBM model
+gbm_model <- gbm(
+  formula = age ~ .,                  # Response variable is 'age', predictors are all other variables
+  data = age_train,                   # Training dataset
+  distribution = "gaussian",           # Since we're doing regression (continuous target)
+  n.trees = 1000,                     # Number of boosting iterations (trees)
+  interaction.depth = 4,               # Max depth of the trees
+  shrinkage = 0.01,                   # Learning rate (shrinkage factor)
+  bag.fraction = 0.5,                 # Fraction of data used for each tree (default 0.5)
+  cv.folds = 5,                       # Cross-validation (5-fold CV)
+  n.cores = NULL,                     # Number of cores (default is all cores)
+  verbose = TRUE                       # Print progress
+)
+
+# Check the model summary
+summary(gbm_model)
+
+# Get the cross-validation results
+cv_results <- gbm_model$cv.error
+print(paste("CV Error for the model: ", mean(cv_results)))
+
+# Plot the CV error across trees (this helps to see how the model performs as the number of trees increases)
+plot(1:1000, cv_results, type = "l", xlab = "Number of Trees", ylab = "Cross-Validation Error",
+     main = "Boosting: CV Error across Trees", col = "blue", lwd = 2)
+
+# You can also get the final model predictions
+age_pred_gbm <- predict(gbm_model, newdata = age_test, n.trees = 1000)
+
+# Evaluate the model performance on the test set (RMSE)
+rmse_gbm <- sqrt(mean((age_test$age - age_pred_gbm)^2))
+print(paste("RMSE for GBM Model: ", round(rmse_gbm, 2)))
+
+```
+
+
+Read the documentation for the gbm() function.
+
+Also: there are many gbm packages out there - for convenience we stick to the same one as the book.
+
+A big difference is the tendency to (sometimes) overfit.
+
+To avoid this we do CV and get an estimate of the test error. This is built into the gbm() function - but it's NOT mentioned in the book labs.
+
+And... now it get's annoying: gbm does NOT use the x and y interface... It uses a formula only.
+
+```{r}
+
+library(gbm)
+
+set.seed(0)
+
+```
+
+
+------------------------------------------------------------------------
+
+Like the randomforest() function, gbm() also returns some info on train and c.v. error.
+
+Look at the help for gbm and identify what you need! (You have to look at what is returned)
+
+## Q3.2: Plot the CV error as function of tree number
+
+```{r}
+# Extract Cross-Validation Errors
+cv_results <- gbm_model$cv.error
+
+# Create a sequence for the number of trees
+tree_numbers <- 1:length(cv_results)
+
+# Plot CV error as a function of the number of trees
+plot(tree_numbers, cv_results, type = "l",
+     xlab = "Number of Trees", ylab = "Cross-Validation Error",
+     main = "Boosting: CV Error across Trees", 
+     col = "blue", lwd = 2)
+
+# Highlight the minimum CV error point
+min_mse_idx <- which.min(cv_results)
+points(tree_numbers[min_mse_idx], cv_results[min_mse_idx], 
+       col = "red", pch = 19)
+
+# Add a vertical line at the optimal number of trees
+abline(v = tree_numbers[min_mse_idx], col = "red", lty = 2)
+
+```
+
+------------------------------------------------------------------------
+
+## Q3.3: What is your conclusion here? How many trees would you choose to use?
+
+
+------------------------------------------------------------------------
+
+## Q3.4: We have used shallow trees (depth 1) - what if you use deeper trees?
+
+
+------------------------------------------------------------------------
+
+# BART regression
+
+I will NOT ask you to do BART.
+
+I have never used it for any practical purpose and it hasn't gained a lot of attention in ML competitions.
+
+I will show you a quick fit (stolen from the book labs) and how we can calculate the test MSE.
+
+Then you can compare the test MSE with the test MSE from your fitted randomForest and GBM.
+
+And then... maybe I should reconsider and start using BART? You tell me!
+
+```{r}
+
+library(BART)
+
+bartfit   <- gbart(x.train = as.matrix(xtrain) , ytrain , x.test = as.matrix(xtest))
+yhat.bart <- bartfit$yhat.test.mean
+mse_bart  <- mean (( ytest - yhat.bart)^2)
+
+bart_predicted <- predict(bartfit, newdata = as.matrix(xtest))
+test_predicted <- colMeans(bart_predicted)
+test_observed  <- ytest
+residuals_bart <- (test_observed - test_predicted)
+mean(residuals_bart^2)
+
+```
+
+# Comparing the 3 methods using the test data
+
+## Q4.1: Use your three models to predict the test data, compare the error (MSE, MAE, RMSE - whatever your prefer).
+
+
+------------------------------------------------------------------------
+
+# Well done!
+
+As you can see all three methods are somewhat similar in syntax.
+
+But also different - some can use a formula input, some need a formula, some can't use formula.
+
+Also, tuning of the parameters is difficult and requires deep knowledge of all the parameters.
+
+BUT!!! We do have a package that unifies everything.
+
+It makes it very easy to run any kind of test error estimation (Cross Validation, Bootstrapping, etc) on any method (lasso, randomforest, boosting, ridge - whatever).
+
+It also always use the same input data format.
+
+It also have the same way to get "importance" back from a model.
+
+It's called the "caret" package - and we will get to that in 1-2 weeks.
+
+There are some higher speed versions of random forest for R (ranger) and boosting (xgboost) that runs a LOT faster than the packages used in the book labs. We will come back to these. (Both of these are availble in caret).
+
+And if you want super speed you should look for "lightgbm".
+
+## Notes on tuning
+
+We haven't really covered the many different parameters of randomforests, GBM and BART. If you look at the book and the functions you can see that there are quite a lot of parameters that can/will influence the train and test error.
+
+There is only one way to go: tuning the models using cross validation.
+
+Caret can also tune all the parameters using bootstrapping, cross validation, repeat cross validation or whatever you prefer...
+
+Stay tuned!
+
+# BONUS_Q I: Try sex for all three methods!
+
+If you want - go ahead. Warning: you will run into errors and frustrations.
+
+
+------------------------------------------------------------------------
+
+# BONUS_Q II: Try lightGBM
+
+You will have to google and read about lightGBM.
+
+It's currently what we all use for tree based predicions. Why? Try it.
+
+Just default settings, no tuning or anything. Just try it and notice speed.
+
+It can be tweaked to do RF and BART, by default it does something similar to gradient boosting.
+
+``` r
+
+library(lightgbm)
+```
+
+
+------------------------------------------------------------------------

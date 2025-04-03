@@ -1,0 +1,242 @@
+---
+title: "Round3"
+author: "Pablo Bondia"
+date: "2025-04-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(caret)  # For model training
+library(glmnet)  # For elastic net
+library(ranger)  # For Random Forest
+library(gbm)  # For Gradient Boosting
+library(e1071)  # For SVM
+library(Metrics)  # For RMSE evaluation
+
+# Load the data
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds")  %>% tbl_df()
+
+# Rename the response variable
+df <- df %>% rename(response = dFRS)
+
+# Display the first few rows of the data
+head(df)
+
+```
+
+```{r}
+# Split data into training and prediction sets
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))
+
+# Check dimensions of both sets
+dim(data_predict)
+dim(data_train)
+
+```
+
+```{r}
+# Create training and test folds (80-20 split)
+set.seed(0)
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Create model matrices (without the response column)
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
+
+# Convert response variable to numeric vectors
+y_train <- trainfold$response
+y_test <- testfold$response
+
+```
+
+DATAFRAME EXPLORATION: PCA
+
+If you see that only a small number of principal components explain most of the variance (for example, the first 2-3 components explain 80% or more of the variance), that’s a good indicator that there are underlying correlations between the variables. This is because correlated variables typically collapse into a few principal components.
+
+```{r}
+# Select numeric columns for PCA
+numeric_data <- data_train %>% select_if(is.numeric)
+
+# Scale and center the data before applying PCA
+pca <- prcomp(numeric_data, scale. = TRUE)
+
+# Summary of PCA to see variance explained
+summary(pca)
+
+# Extract variance explained
+var_explained <- summary(pca)$importance[2, ]  # Second row is the proportion of variance explained
+
+# Plot the variance explained by each component
+library(ggplot2)
+
+# Create a data frame for plotting
+pca_variance_df <- data.frame(
+  Principal_Component = 1:length(var_explained),
+  Variance_Explained = var_explained
+)
+
+# Scree plot
+ggplot(pca_variance_df, aes(x = Principal_Component, y = Variance_Explained)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Variance Explained by Each Principal Component",
+       x = "Principal Component", 
+       y = "Variance Explained") +
+  theme_minimal()
+
+# Plot the cumulative variance explained
+cumulative_variance <- cumsum(var_explained)
+
+ggplot(data.frame(Principal_Component = 1:length(cumulative_variance), 
+                  Cumulative_Variance = cumulative_variance), 
+       aes(x = Principal_Component, y = Cumulative_Variance)) +
+  geom_line(color = "darkred", size = 1.2) +
+  geom_point(color = "darkred") +
+  labs(title = "Cumulative Variance Explained by Principal Components",
+       x = "Principal Component", 
+       y = "Cumulative Variance Explained") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+```{r}
+# Step 3: Find the number of components that explain 97.5% of the variance
+threshold <- 0.99
+n_components <- which(cumulative_variance >= threshold)[1]
+
+# Print the number of components and the explained variance
+cat("Number of components that explain at least 99% of the variance:", n_components, "\n")
+cat("Cumulative variance explained by the selected components:", cumulative_variance[n_components], "\n")
+```
+
+
+```{r}
+#Step 4: Apply PCA to transform both training and test datasets based on the selected components
+# Make sure to select only the numeric features from the train and test sets
+numeric_train <- x_train[, colnames(x_train) %in% colnames(numeric_data)]
+numeric_test <- x_test[, colnames(x_test) %in% colnames(numeric_data)]
+
+# Perform PCA transformation on both training and test data
+x_train_pca <- predict(pca, newdata = numeric_train)[, 1:n_components]
+x_test_pca <- predict(pca, newdata = numeric_test)[, 1:n_components]
+
+# Check the dimensions of the reduced data
+cat("Training data dimensions after PCA:", dim(x_train_pca), "\n")
+cat("Test data dimensions after PCA:", dim(x_test_pca), "\n")
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Set up training control for repeated cross-validation with 3 repetitions
+trControl <- trainControl(method = "repeatedcv", number = 10, 
+                          repeats = 3,  # Repeat 3 times (can adjust)
+                          verboseIter = TRUE)
+
+# Initialize result tibble
+result <- tibble(method = c("glmnet", "ranger", "gbm", "svmRadial"),
+                 accuracy_train = NA, 
+                 accuracy_test = NA,
+                 runtime = NA)
+
+
+```
+
+
+```{r}
+# Loop through each model
+for(i in 1:nrow(result)) {
+  
+  # Define the method to use
+  method <- result$method[i]
+  
+  # Log the model being trained
+  cat(paste(Sys.time(), "Doing", method, "\n"), file = "log.txt", append = TRUE)
+  
+  # Record start time for runtime calculation
+  starttime <- as.integer(Sys.time())
+  
+  # Fit the model using caret
+  fit <- train(x = x_train, 
+               y = y_train, 
+               method = method,
+               tuneLength = 10,  # Tune hyperparameters
+               trControl = trControl)
+  
+  # Calculate runtime
+  runtime <- as.integer(Sys.time()) - starttime
+  
+  # Calculate RMSE for test data (regression task)
+  test_predictions <- predict(fit, newdata = x_test)
+  test_rmse <- rmse(y_test, test_predictions)  # RMSE evaluation
+
+  # Save performance and runtime
+  result$accuracy_train[i] <- mean(fit$resample$RMSE)  # For regression, using RMSE (Root Mean Squared Error)
+  result$accuracy_test[i] <- test_rmse
+  result$runtime[i] <- runtime
+  
+  # Log model completion
+  cat(paste(Sys.time(), "Done", method, "Runtime:", runtime, "\n"), file = "log.txt", append = TRUE)
+}
+
+# Print the results of model comparisons
+print(result)
+
+```
+
+Plan: 
+
+1- Check for colinearity. TO SEE WHAT TO USE AND MAYBE DO REGULARIZATION OR PCA. Remember elastic net (lasso part) is sensitive to colinearity, also sv. USE CORRELATION MATRIX OR VIF OR PCA (see if a lot of the variance is explained by few PCs)
+
+Didnt find a lot of colinearity.
+
+2-Check for outliers, remove them and make models that become very good at normal data and bad at outliers.
+
+
+3- Check to see if diff models capture diff aspects of the date? TO SEE IF I SHOULD AVERAGE PREDICITONS OF DIFFERENT MODELS. Metalearning is another option but i dont like it
+
+3- Look at skewed data?
+
+4- Feature engineering?
+
+
+
+
+4- TEST IF THE MODELS AR SIGN DIFFERENT, USING ANOVA.
+
+Model Type	Recommended Dimensionality Reduction Techniques
+Linear Models (ElasticNet, Lasso, etc.)	PCA (to handle multicollinearity and reduce noise)
+Tree-Based Models (Random Forest, GBM)	None (Tree models can handle high-dimensional and correlated data well)
+Non-Linear Models (SVM, Neural Networks)	PCA (if linear relationships exist), UMAP (for non-linear relationships)
+Clustering Models (K-means, DBSCAN)	PCA (for linear clusters), UMAP (for non-linear clusters)
+
+
+
+
+
+```{r}
+
+```
+

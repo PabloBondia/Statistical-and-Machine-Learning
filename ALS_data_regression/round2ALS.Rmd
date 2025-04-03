@@ -1,0 +1,135 @@
+---
+title: "ALS_Round2"
+author: "Pablo Bondia"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(tidyverse)
+
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds")  %>% tbl_df()
+
+df <- df %>% rename(response = dFRS)
+
+head(df)
+
+```
+
+# Split into training and prediction set
+
+
+GETTING TEST AND TRAINING DATA
+
+```{r}
+library(tidyverse)
+library(xgboost)
+library(Matrix)
+library(Metrics)  # For RMSE evaluation
+library(caret)  # Load caret package
+set.seed(0)
+
+data_train    <- df %>% filter(!is.na(response))
+data_predict  <- df %>% filter(is.na(response))                              
+
+dim(data_predict)
+dim(data_train)
+
+```
+
+GETTING TRAINING AND VALIDATION SETS:
+
+```{r}
+# Dividir en conjunto de entrenamiento (80%) y prueba (20%)
+set.seed(0)
+# Convert data to matrix format (excluding intercept column)
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test  <- model.matrix(response ~ ., testfold)[,-1]
+
+# Convert response variable to numeric vectors
+y_train <- trainfold$response
+y_test  <- testfold$response
+
+# Convert data into XGBoost DMatrix format (faster and optimized)
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dtest  <- xgb.DMatrix(data = x_test, label = y_test)
+```
+
+
+HYPERPARAMETER GRID
+```{r}
+tune_grid <- expand.grid(
+  nrounds = c(100),         # Reduce to 2 values
+  eta = c(0.05, 0.1),           # Fewer values
+  max_depth = c(6),          # Shallower trees
+  gamma = c(0.1),            
+  colsample_bytree = c(0.8), 
+  min_child_weight = c(1, 3),    
+  subsample = c(0.8)         
+)
+
+
+```
+ 
+
+Train the Model With CV
+
+```{r}
+set.seed(42)  # Ensure reproducibility
+
+# Train with cross-validation
+model_tuned <- train(
+  x = x_train, y = y_train,
+  method = "xgbTree",
+  trControl = trainControl(method = "cv", number = 5),  # 5-fold CV
+  tuneGrid = tune_grid
+)
+
+# Best hyperparameters
+best_params <- model_tuned$bestTune
+print(best_params)
+
+```
+
+Train with best parameters
+```{r}
+# Convert best parameters to a list
+params <- list(
+  objective = "reg:squarederror",
+  eta = best_params$eta,
+  max_depth = best_params$max_depth,
+  subsample = best_params$subsample,
+  colsample_bytree = best_params$colsample_bytree,
+  lambda = best_params$lambda,
+  alpha = best_params$alpha
+)
+
+# Train final model
+final_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_params$nrounds,
+  watchlist = list(train = dtrain, val = dtest),
+  early_stopping_rounds = 10
+)
+
+```
+
+
+```{r}
+
+# Make predictions on the test set
+predictions <- predict(final_model, dtest)
+
+# Calculate RMSE (Root Mean Squared Error)
+rmse_value <- rmse(y_test, predictions)
+print(paste("Final RMSE:", round(rmse_value, 4)))
+
+
+```
+

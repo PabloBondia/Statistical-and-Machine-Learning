@@ -1,0 +1,444 @@
+
+SUMMARY: BAD RESULTS, LOSE OF IMPORTANT INFORMATION BY USING UMAP, 
+
+TRIED ALSO WITH PCA BUT THE RESULTS WERE NOT BETTER
+
+
+
+
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(caret)      # For model training
+library(glmnet)     # For ridge and lasso
+library(umap)       # For dimensionality reduction
+library(Metrics)    # For RMSE evaluation
+library(doParallel) # For parallel processing
+
+# Set up parallel processing to speed up computation
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Load the data (assuming you've already done this)
+# df <- read_rds(file = "ALS_progression_rate.1822x370.rds") %>% tbl_df()
+# df <- df %>% rename(response = dFRS)
+
+# Split data into training and prediction sets
+data_train <- df %>% filter(!is.na(response))
+data_predict <- df %>% filter(is.na(response))
+
+# Create training and test folds using simple random sampling to avoid potential errors
+set.seed(0)
+# Simple random split (more robust than createDataPartition for some datasets)
+train_indices <- sample(1:nrow(data_train), size = floor(0.8 * nrow(data_train)))
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Create model matrices (without the response column)
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
+
+# Convert response variable to numeric vectors
+y_train <- trainfold$response
+y_test <- testfold$response
+
+# Function to apply UMAP and train models
+train_umap_models <- function(x_train, y_train, x_test, y_test,
+                            n_components = 20,
+                            n_neighbors = 15,
+                            min_dist = 0.1) {
+  
+  message("Applying UMAP transformation...")
+  
+  # Handle potential errors in UMAP
+  umap_result <- tryCatch({
+    umap(x_train, 
+         n_components = n_components,
+         n_neighbors = min(n_neighbors, nrow(x_train)-1),  # Ensure n_neighbors is valid
+         min_dist = min_dist,
+         random_state = 123)
+  }, error = function(e) {
+    message("UMAP error: ", e$message)
+    message("Falling back to PCA...")
+    # Use PCA as fallback
+    pca <- prcomp(x_train, center = TRUE, scale. = TRUE)
+    # Create a list that mimics umap output structure
+    return(list(
+      layout = pca$x[, 1:min(n_components, ncol(pca$x))],
+      # Add a predict method
+      predict = function(data) {
+        # Center and scale using the same parameters as the original PCA
+        data_scaled <- scale(data, center = pca$center, scale = pca$scale)
+        # Project onto principal components
+        data_scaled %*% pca$rotation[, 1:min(n_components, ncol(pca$rotation))]
+      }
+    ))
+  })
+  
+  # Transform training and test data
+  train_reduced <- as.data.frame(umap_result$layout)
+  colnames(train_reduced) <- paste0("Component_", 1:ncol(train_reduced))
+  
+  # Project test data using the same UMAP/PCA model
+  test_reduced <- as.data.frame(predict(umap_result, x_test))
+  colnames(test_reduced) <- paste0("Component_", 1:ncol(test_reduced))
+  
+  # Set up cross-validation parameters
+  ctrl <- trainControl(
+    method = "repeatedcv",
+    number = 10,      # 10-fold CV
+    repeats = 3,      # Repeat 3 times
+    verboseIter = TRUE,
+    allowParallel = TRUE
+  )
+  
+  # Create results dataframe
+  results <- data.frame(
+    model = character(),
+    train_rmse = numeric(),
+    test_rmse = numeric(),
+    mae = numeric(),
+    r_squared = numeric(),
+    components = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Train Lasso model
+  message("\nTraining Lasso model...")
+  # Create grid of lambda values
+  lasso_grid <- expand.grid(alpha = 1, 
+                          lambda = 10^seq(-4, 0, length.out = 30))
+  
+  lasso_model <- train(
+    x = train_reduced,
+    y = y_train,
+    method = "glmnet",
+    tuneGrid = lasso_grid,
+    trControl = ctrl
+  )
+  
+  # Make predictions
+  lasso_train_pred <- predict(lasso_model, train_reduced)
+  lasso_test_pred <- predict(lasso_model, test_reduced)
+  
+  # Calculate metrics
+  lasso_train_rmse <- rmse(y_train, lasso_train_pred)
+  lasso_test_rmse <- rmse(y_test, lasso_test_pred)
+  lasso_mae <- mean(abs(y_test - lasso_test_pred))
+  lasso_r2 <- 1 - sum((y_test - lasso_test_pred)^2) / sum((y_test - mean(y_test))^2)
+  
+  # Add to results
+  results <- rbind(results, data.frame(
+    model = "UMAP + Lasso",
+    train_rmse = lasso_train_rmse,
+    test_rmse = lasso_test_rmse,
+    mae = lasso_mae,
+    r_squared = lasso_r2,
+    components = n_components
+  ))
+  
+  # Train Ridge model
+  message("\nTraining Ridge model...")
+  ridge_grid <- expand.grid(alpha = 0, 
+                          lambda = 10^seq(-4, 0, length.out = 30))
+  
+  ridge_model <- train(
+    x = train_reduced,
+    y = y_train,
+    method = "glmnet",
+    tuneGrid = ridge_grid,
+    trControl = ctrl
+  )
+  
+  # Make predictions
+  ridge_train_pred <- predict(ridge_model, train_reduced)
+  ridge_test_pred <- predict(ridge_model, test_reduced)
+  
+  # Calculate metrics
+  ridge_train_rmse <- rmse(y_train, ridge_train_pred)
+  ridge_test_rmse <- rmse(y_test, ridge_test_pred)
+  ridge_mae <- mean(abs(y_test - ridge_test_pred))
+  ridge_r2 <- 1 - sum((y_test - ridge_test_pred)^2) / sum((y_test - mean(y_test))^2)
+  
+  # Add to results
+  results <- rbind(results, data.frame(
+    model = "UMAP + Ridge",
+    train_rmse = ridge_train_rmse,
+    test_rmse = ridge_test_rmse,
+    mae = ridge_mae,
+    r_squared = ridge_r2,
+    components = n_components
+  ))
+  
+  # Return models and results
+  return(list(
+    umap_model = umap_result,
+    lasso_model = lasso_model,
+    ridge_model = ridge_model,
+    lasso_predictions = lasso_test_pred,
+    ridge_predictions = ridge_test_pred,
+    results = results,
+    train_reduced = train_reduced,
+    test_reduced = test_reduced
+  ))
+}
+
+# Try different UMAP component counts
+umap_components_to_try <- c(10, 20, 50, 100)
+all_results <- data.frame()
+all_models <- list()
+
+# Try each component count
+for (n_comp in umap_components_to_try) {
+  message(paste("\n\nTrying with", n_comp, "components"))
+  
+  result <- train_umap_models(
+    x_train = x_train,
+    y_train = y_train,
+    x_test = x_test,
+    y_test = y_test,
+    n_components = n_comp
+  )
+  
+  all_results <- rbind(all_results, result$results)
+  all_models[[paste0("components_", n_comp)]] <- result
+}
+
+# Stop parallel cluster
+stopCluster(cl)
+
+# Display results sorted by test RMSE
+all_results %>%
+  arrange(test_rmse) %>%
+  print(n = nrow(all_results))
+
+# Save all models and results
+saveRDS(all_models, "umap_models.rds")
+write.csv(all_results, "umap_model_results.csv", row.names = FALSE)
+
+# Plot the results
+ggplot(all_results, aes(x = components, y = test_rmse, color = model)) +
+  geom_line() +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Model Performance with Different UMAP Components",
+    x = "Number of UMAP Components",
+    y = "Test RMSE",
+    color = "Model"
+  )
+
+# Find the best model configuration
+best_config <- all_results %>%
+  arrange(test_rmse) %>%
+  slice(1)
+
+cat("\nBest model:", best_config$model, "with", best_config$components, "components")
+cat("\nTest RMSE:", best_config$test_rmse)
+cat("\nR²:", best_config$r_squared)
+cat("\nMAE:", best_config$mae)
+
+# Get the best model
+best_model_type <- ifelse(grepl("Lasso", best_config$model), "lasso_model", "ridge_model")
+best_components <- best_config$components
+best_model_set <- all_models[[paste0("components_", best_components)]]
+best_model <- best_model_set[[best_model_type]]
+
+# Create residual plots for the best model
+if (best_model_type == "lasso_model") {
+  predictions <- best_model_set$lasso_predictions
+} else {
+  predictions <- best_model_set$ridge_predictions
+}
+
+residuals <- y_test - predictions
+test_results <- data.frame(
+  Actual = y_test,
+  Predicted = predictions,
+  Residuals = residuals
+)
+
+# Create diagnostic plots
+p1 <- ggplot(test_results, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Actual vs Predicted Values",
+    subtitle = paste(best_config$model, "with", best_components, "components"),
+    x = "Actual",
+    y = "Predicted"
+  )
+
+p2 <- ggplot(test_results, aes(x = Predicted, y = Residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Residual Plot",
+    x = "Predicted Values",
+    y = "Residuals"
+  )
+
+p3 <- ggplot(test_results, aes(x = Residuals)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Residuals",
+    x = "Residuals",
+    y = "Count"
+  )
+
+# Combine the plots
+library(gridExtra)
+grid.arrange(p1, p2, p3, ncol = 2)
+
+# Apply the best model to prediction data (if available)
+if (nrow(data_predict) > 0) {
+  # Create model matrix for prediction data
+  x_predict <- model.matrix(~ ., data_predict %>% select(-response))[,-1]
+  
+  # Ensure columns match training data
+  common_cols <- intersect(colnames(x_train), colnames(x_predict))
+  x_predict_filtered <- x_predict[, common_cols]
+  x_train_filtered <- x_train[, common_cols]
+  
+  # If dimensions don't match, add missing columns
+  if (ncol(x_predict_filtered) < ncol(x_train_filtered)) {
+    missing_cols <- setdiff(colnames(x_train_filtered), colnames(x_predict_filtered))
+    for (col in missing_cols) {
+      x_predict_filtered <- cbind(x_predict_filtered, rep(0, nrow(x_predict_filtered)))
+      colnames(x_predict_filtered)[ncol(x_predict_filtered)] <- col
+    }
+  }
+  
+  # Transform with UMAP
+  predict_reduced <- predict(best_model_set$umap_model, x_predict_filtered)
+  predict_reduced <- as.data.frame(predict_reduced)
+  colnames(predict_reduced) <- paste0("Component_", 1:ncol(predict_reduced))
+  
+  # Make predictions
+  final_predictions <- predict(best_model, predict_reduced)
+  
+  # Add predictions to original dataframe
+  data_predict$predicted_response <- final_predictions
+  
+  # Save predictions
+  write.csv(data_predict, "predicted_responses.csv", row.names = FALSE)
+  
+  cat("\nPredictions made for", nrow(data_predict), "observations")
+}
+
+# Compare against baseline (without UMAP)
+message("\n\nTraining baseline models without dimensionality reduction...")
+
+# Set up cross-validation parameters
+ctrl <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 3,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+
+# Train baseline Lasso model
+message("Training baseline Lasso model...")
+lasso_grid <- expand.grid(alpha = 1, 
+                        lambda = 10^seq(-4, 0, length.out = 30))
+```
+
+
+```{r}
+# Before running baseline models, restart the parallel cluster
+# (It might have been stopped after the UMAP models finished)
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Now train baseline Lasso model
+message("Training baseline Lasso model...")
+lasso_grid <- expand.grid(alpha = 1, 
+                        lambda = 10^seq(-4, 0, length.out = 30))
+
+baseline_lasso <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  tuneGrid = lasso_grid,
+  trControl = ctrl
+)
+# Train baseline Ridge model
+message("Training baseline Ridge model...")
+ridge_grid <- expand.grid(alpha = 0, 
+                        lambda = 10^seq(-4, 0, length.out = 30))
+
+baseline_ridge <- train(
+  x = x_train,
+  y = y_train,
+  method = "glmnet",
+  tuneGrid = ridge_grid,
+  trControl = ctrl
+)
+
+# Make predictions and calculate metrics
+lasso_pred <- predict(baseline_lasso, x_test)
+ridge_pred <- predict(baseline_ridge, x_test)
+
+lasso_rmse <- rmse(y_test, lasso_pred)
+ridge_rmse <- rmse(y_test, ridge_pred)
+lasso_mae <- mean(abs(y_test - lasso_pred))
+ridge_mae <- mean(abs(y_test - ridge_pred))
+lasso_r2 <- 1 - sum((y_test - lasso_pred)^2) / sum((y_test - mean(y_test))^2)
+ridge_r2 <- 1 - sum((y_test - ridge_pred)^2) / sum((y_test - mean(y_test))^2)
+
+# Create baseline results dataframe
+baseline_results <- data.frame(
+  model = c("Baseline Lasso", "Baseline Ridge"),
+  train_rmse = c(rmse(y_train, predict(baseline_lasso, x_train)), 
+                rmse(y_train, predict(baseline_ridge, x_train))),
+  test_rmse = c(lasso_rmse, ridge_rmse),
+  mae = c(lasso_mae, ridge_mae),
+  r_squared = c(lasso_r2, ridge_r2),
+  components = c(NA, NA)
+)
+
+# Combine with UMAP results
+all_results_combined <- rbind(all_results, baseline_results)
+
+# Display final comparison
+all_results_combined %>%
+  arrange(test_rmse) %>%
+  print(n = nrow(all_results_combined))
+
+# Final plot comparing all models
+ggplot(all_results_combined, aes(x = ifelse(is.na(components), "Baseline", as.character(components)), 
+                               y = test_rmse, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Model Performance Comparison",
+    x = "Number of Components (or Baseline)",
+    y = "Test RMSE",
+    fill = "Model"
+  )
+
+# Save the final results
+saveRDS(baseline_lasso, "baseline_lasso.rds")
+saveRDS(baseline_ridge, "baseline_ridge.rds")
+write.csv(all_results_combined, "final_model_comparison.csv", row.names = FALSE)
+
+# Print improvement over baseline
+best_umap_rmse <- min(all_results$test_rmse)
+best_baseline_rmse <- min(baseline_results$test_rmse)
+improvement <- (best_baseline_rmse - best_umap_rmse) / best_baseline_rmse * 100
+
+cat("\n\nBest UMAP model RMSE:", best_umap_rmse)
+cat("\nBest baseline model RMSE:", best_baseline_rmse)
+cat("\nImprovement with UMAP:", round(improvement, 2), "%")
+```
+
+

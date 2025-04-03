@@ -1,0 +1,314 @@
+---
+title: "The caret package"
+author: "Palle Villesen"
+output: 
+  html_document:
+    code_folding: show
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+# Aim of this exercise
+
+Without any additional help I want you to try 
+
+lasso, 
+randomforest and 
+boosting on the KARMEN data but using the caret package.
+
+For both regression (age) and classification (sex):
+
+ * Try to use bootstrapping and/or repeated cross validation
+ * Compare with your results from last week
+
+Hint: for classification we like to measure "Accuracy" and for regression it's "RMSE"
+
+## Speed
+
+If you need to estimate stuff faster, it is normal practice to:
+
+ * Use a subset of the predictors
+ * Use a subset of the samples
+ * both
+ 
+Another simple trick is to do 2 fold CV many times. Then it performs 2 runs, each with half of the data for training (so it runs faster).
+
+Finally, you can also change tuneLength to a smaller number.
+
+## Q1: What is the price you pay if you do these adjustments?
+
+
+---
+
+```{r, message=F, warning=F}
+
+knitr::opts_chunk$set(message=F)
+knitr::opts_chunk$set(warning=F)
+
+library(tidyverse)
+theme_set(theme_classic())
+
+library(caret)
+
+```
+
+
+# Karmen data regression (age)
+
+## Reading and reformatting data
+
+I code as as 0 and 1 and make it a factor.
+
+```{r}
+
+df  <- read_rds("karmen_data_with_sex_and_age.rds") 
+compounds  <- df %>% select(-age,-sex) %>% names()
+
+df$sex <- factor(df$sex)
+
+df <- df %>% select(age,sex,everything())
+
+(sex_data <- df %>% select(sex,all_of(compounds)))
+(age_data <- df %>% select(age, all_of(compounds)))
+
+rm(df)
+
+```
+
+## Create a training/test split
+
+```{r}
+
+set.seed(0)
+
+train <- sample(x = 1:nrow(age_data), size = round(0.8*nrow(age_data)))
+
+# Train/test split (assuming already done)
+age_train <- age_data[train, ]
+age_test  <- age_data[-train, ]
+
+sex_train <- sex_data[train, ]
+sex_test  <- sex_data[-train, ]
+
+```
+
+PREANALYSIS
+
+AGE
+```{r}
+# Boxplot for numerical features
+age_data %>% 
+  gather(key = "Feature", value = "Value") %>%
+  ggplot(aes(x = Feature, y = Value)) +
+  geom_boxplot() +
+  coord_flip() + 
+  theme_minimal()
+
+z_scores <- scale(age_data[-1])  # Exclude age column
+outlier_rows <- which(abs(z_scores) > 3, arr.ind = TRUE)
+print(outlier_rows)
+
+```
+SEX
+```{r}
+# Load required libraries
+library(caret)
+library(tidyverse)
+library(ggplot2)
+library(umap)
+library(rgl)    # For 3D plotting
+library(ggplot2) # For 2D plotting
+
+# Assuming 'sex_train' is your dataset, and 'sex' is the target variable.
+# Standardize the data (excluding the target column)
+scaled_data <- scale(sex_train[-1])  # Exclude 'sex' column for PCA and UMAP
+
+# 1. Apply PCA
+
+# Apply PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+
+# Summary of PCA (explained variance)
+summary(pca_result)
+
+# 2. Plot the first 12 principal components
+pca_scores <- data.frame(pca_result$x)
+
+# Plot PC1 vs PC2, PC3 vs PC4, ..., PC11 vs PC12
+for (i in seq(1, 11, by = 2)) {
+  p1 <- i
+  p2 <- i + 1
+  ggplot(pca_scores, aes_string(x = paste("PC", p1, sep = ""), y = paste("PC", p2, sep = ""))) +
+    geom_point(aes(color = as.factor(sex_train$sex)), size = 2) +
+    theme_minimal() +
+    labs(title = paste("PCA: PC", p1, "vs PC", p2), x = paste("PC", p1), y = paste("PC", p2)) +
+    theme(legend.title = element_blank())
+}
+
+# 3. Plot cumulative variance explained by each principal component
+plot(cumsum(summary(pca_result)$importance[2,]), 
+     type = "b", xlab = "Number of Components", ylab = "Cumulative Variance Explained", 
+     main = "Cumulative Variance Explained by PCA Components")
+
+# 4. 3D Plot for PC1, PC2, and PC3
+plot3d(pca_scores$PC1, pca_scores$PC2, pca_scores$PC3, 
+       col = as.factor(sex_train$sex), size =_
+
+```
+
+
+
+
+## Your turn
+
+### Q2: Use your knowledge to try the following
+
+ * Use repeated cross validation
+ * Use glmnet (lasso/ridge), randomforest and gradient boosting
+ * Compare with your results from last week
+
+```{r}
+# Load required libraries
+library(caret)
+library(glmnet)      # For LASSO and Ridge
+library(randomForest) # For Random Forest
+library(gbm)         # For Gradient Boosting
+library(tidyverse)   # For data wrangling
+library(doParallel)  # For parallel processing
+library(foreach)     # For parallel processing
+
+# Set up parallel processing
+cores <- detectCores() - 1  # Leave one core free for system processes
+cl <- makeCluster(cores)
+registerDoParallel(cl)
+
+# Set d for reproducibility
+set.seed(0)
+
+# Print info about parallelization
+cat("Starting parallel processing using", cores, "cores\n")
+
+# Set up cross-validation control with progress reporting
+ctrl <- trainControl(
+  method = "repeatedcv", 
+  number = 10, 
+  repeats = 3,
+  verboseIter = TRUE,  # Print progress during training
+  allowParallel = TRUE # Allow parallel processing
+)
+
+# Create function to display progress
+print_progress <- function(model_name, i, total) {
+  cat(paste0("Model: ", model_name, " - ", i, "/", total, " (", round(i/total*100), "% complete)\n"))
+}
+
+# REGRESSION MODELS
+cat("\n====== REGRESSION MODELS ======\n")
+total_models <- 3
+
+# LASSO Regression
+print_progress("LASSO Regression", 1, total_models)
+lasso_model <- train(age ~ ., data = age_data[train,], 
+                     method = "glmnet",
+                     trControl = ctrl,
+                     tuneLength = 10)
+
+# Random Forest Regression
+print_progress("Random Forest Regression", 2, total_models)
+rf_model <- train(age ~ ., data = age_data[train,], 
+                  method = "rf",
+                  trControl = ctrl,
+                  tuneLength = 5)
+
+# Gradient Boosting Regression
+print_progress("Gradient Boosting Regression", 3, total_models)
+gbm_model <- train(age ~ ., data = age_data[train,], 
+                   method = "gbm",
+                   trControl = ctrl,
+                   tuneLength = 5,
+                   verbose = FALSE)
+
+# Make predictions
+cat("\nMaking regression predictions...\n")
+pred_lasso_age <- predict(lasso_model, age_test)
+pred_rf_age <- predict(rf_model, age_test)
+pred_gbm_age <- predict(gbm_model, age_test)
+
+# Calculate RMSE
+rmse_lasso <- RMSE(pred_lasso_age, age_test$age)
+rmse_rf <- RMSE(pred_rf_age, age_test$age)
+rmse_gbm <- RMSE(pred_gbm_age, age_test$age)
+
+# Print RMSE results
+cat("\n===== REGRESSION RESULTS =====\n")
+cat("RMSE:\nLASSO:", rmse_lasso, "\nRF:", rmse_rf, "\nGBM:", rmse_gbm, "\n")
+
+# CLASSIFICATION MODELS
+cat("\n====== CLASSIFICATION MODELS ======\n")
+
+# LASSO Classification
+print_progress("LASSO Classification", 1, total_models)
+lasso_class <- train(sex ~ ., data = sex_data[train,], 
+                     method = "glmnet",
+                     trControl = ctrl,
+                     tuneLength = 10)
+
+# Random Forest Classification
+print_progress("Random Forest Classification", 2, total_models)
+rf_class <- train(sex ~ ., data = sex_data[train,], 
+                  method = "rf",
+                  trControl = ctrl,
+                  tuneLength = 5)
+
+# Gradient Boosting Classification
+print_progress("Gradient Boosting Classification", 3, total_models)
+gbm_class <- train(sex ~ ., data = sex_data[train,], 
+                   method = "gbm",
+                   trControl = ctrl,
+                   tuneLength = 5,
+                   verbose = FALSE)
+
+# Make predictions
+cat("\nMaking classification predictions...\n")
+pred_lasso_sex <- predict(lasso_class, sex_test)
+pred_rf_sex <- predict(rf_class, sex_test)
+pred_gbm_sex <- predict(gbm_class, sex_test)
+
+# Calculate accuracy
+acc_lasso <- mean(pred_lasso_sex == sex_test$sex)
+acc_rf <- mean(pred_rf_sex == sex_test$sex)
+acc_gbm <- mean(pred_gbm_sex == sex_test$sex)
+
+# Print accuracy results
+cat("\n===== CLASSIFICATION RESULTS =====\n")
+cat("Accuracy:\nLASSO:", acc_lasso, "\nRF:", acc_rf, "\nGBM:", acc_gbm, "\n")
+
+# Stop the cluster
+stopCluster(cl)
+cat("\nParallel processing completed and cluster stopped.\n")
+```
+
+
+
+
+# Q4: TCGA bonus question/task
+
+ * What is your estimated accuracy if you try to classify the tissue of TCGA samples? 
+ * Use any method of your choice to answer this ()
+
+
+---
+
+# Q5: Bonus question II: Help me make an exercise for next year using tidymodels for the karmen data (age regression) comparing lasso and ranger (chatGPT for help)
+
+I will be honest here: I didn't have the time to read/learn tidymodels, so I asked chatGPT the following: "write R code that uses cross validation to compare lasso and ranger using tidymodels for a small dataset with a numeric response called age"
+
+And that formed the base of my answer... so your job now is to use tidymodels to compare lasso and ranger (randomforest) - and use chatGPT for help (unless you can code it by intution/magic).
+
+You will get errors but chatGPT help is a really good starting point.
+
+Hint: my_recipe <- recipe(as.formula(age ~ .), data=mydata)
+
+
+---

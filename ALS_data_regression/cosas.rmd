@@ -30,7 +30,160 @@ data_predict  <- df %>% filter(is.na(response))
 dim(data_predict)
 dim(data_train)
 
+trainfold <- data_train %>% sample_frac(size = 0.80)
+testfold  <- setdiff(data_train, trainfold)
+
+# Extraer matriz de caracter??sticas y vector respuesta
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+y_train <- trainfold$response
+x_test  <- model.matrix(response ~ ., testfold)[,-1]
+y_test  <- testfold$response
+
 ```
+
+# PCR
+
+```{r}
+
+# Load required libraries
+library(pls)
+library(tidyverse)
+library(caret)  
+
+set.seed(10)
+
+# Split data into train and predict sets
+data_train <- df %>% filter(!is.na(response))
+data_predict <- df %>% filter(is.na(response))
+
+# Split train data into training and testing sets
+trainfold <- data_train %>% sample_frac(size = 0.80)
+testfold  <- setdiff(data_train, trainfold)
+
+# Extract feature matrix and response vector
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+y_train <- trainfold$response
+x_test  <- model.matrix(response ~ ., testfold)[,-1]
+y_test  <- testfold$response
+
+# Step 1: Check for missing values and replace them
+x_train[is.na(x_train)] <- 0  # Replace NAs with 0 (or use mean/median)
+x_test[is.na(x_test)] <- 0
+
+# Step 2: Remove columns with near-zero variance
+nzv <- nearZeroVar(x_train)
+if (length(nzv) > 0) {
+  x_train <- x_train[, -nzv]
+  x_test <- x_test[, -nzv]
+}
+
+# Step 3: Ensure no infinite values
+x_train[is.infinite(x_train)] <- 0
+x_test[is.infinite(x_test)] <- 0
+
+### Principal Component Regression (PCR)
+pcr_model <- pcr(y_train ~ x_train, scale = TRUE, validation = "CV")
+
+# Determine the optimal number of components
+validationplot(pcr_model, val.type = "MSEP")  
+
+# Select the best number of components
+best_comp_pcr <- which.min(pcr_model$validation$PRESS)
+
+# Predict on test set
+y_pred_pcr <- predict(pcr_model, x_test, ncomp = best_comp_pcr)
+
+# Compute RMSE for PCR
+rmse_pcr <- sqrt(mean((y_test - y_pred_pcr)^2))
+print(paste("PCR RMSE:", rmse_pcr))
+
+
+### Partial Least Squares (PLS) Regression
+pls_model <- plsr(y_train ~ x_train, scale = TRUE, validation = "CV")
+
+# Determine the optimal number of components
+validationplot(pls_model, val.type = "MSEP")
+
+# Select the best number of components
+best_comp_pls <- which.min(pls_model$validation$PRESS)
+
+# Predict on test set
+y_pred_pls <- predict(pls_model, x_test, ncomp = best_comp_pls)
+
+# Compute RMSE for PLS
+rmse_pls <- sqrt(mean((y_test - y_pred_pls)^2))
+print(paste("PLS RMSE:", rmse_pls))
+
+
+```
+
+Scree plot
+```{r}
+# Perform PCA on the training data
+pca_model <- prcomp(x_train, scale. = TRUE)
+
+# Scree plot to visualize variance explained by each principal component
+screeplot(pca_model, type = "lines", main = "Scree Plot (Variance Explained by PCs)")
+
+# Add cumulative variance explained
+cumvar <- cumsum(pca_model$sdev^2) / sum(pca_model$sdev^2)
+plot(cumvar, type = "b", xlab = "Number of Principal Components", 
+     ylab = "Cumulative Variance Explained", main = "Cumulative Variance Explained by PCs")
+
+```
+
+ Cross-Validation Plot (Model Selection)
+
+
+```{r}
+# Predicted vs Actual Plot for PCR
+plot(y_test, y_pred_pcr, main = "PCR: Predicted vs Actual", 
+     xlab = "Actual Response", ylab = "Predicted Response")
+abline(0,1, col="red", lwd=2)  # Perfect prediction line
+
+# Predicted vs Actual Plot for PLS
+plot(y_test, y_pred_pls, main = "PLS: Predicted vs Actual", 
+     xlab = "Actual Response", ylab = "Predicted Response")
+abline(0,1, col="blue", lwd=2)  # Perfect prediction line
+
+
+```
+
+```{r}
+# Residuals for PCR
+plot(y_test, y_test - y_pred_pcr, main = "PCR Residuals", 
+     xlab = "Actual Response", ylab = "Residuals")
+abline(h=0, col="red", lwd=2)
+
+# Residuals for PLS
+plot(y_test, y_test - y_pred_pls, main = "PLS Residuals", 
+     xlab = "Actual Response", ylab = "Residuals")
+abline(h=0, col="blue", lwd=2)
+
+```
+
+
+
+```{r}
+# Perform PCA on the training data
+pca_model <- prcomp(x_train, scale. = TRUE)
+
+# Compute the proportion of variance explained by each component
+variance_explained <- (pca_model$sdev^2) / sum(pca_model$sdev^2)
+
+# Plot the variance explained by each principal component
+barplot(variance_explained, names.arg = 1:length(variance_explained),
+        main = "Scree Plot: Variance Explained by Each PC",
+        xlab = "Principal Component", ylab = "Proportion of Variance Explained",
+        col = "lightblue", border = "black")
+
+# Add a line connecting the points for better visualization
+lines(1:length(variance_explained), variance_explained, type = "b", col = "red", pch = 19)
+
+```
+
+You can easily tell that you need to aply a non-linear model
+
 
 # My code
 
@@ -89,6 +242,76 @@ print(rmse_results)
 ```
 
 
+```{r}
+# Load required packages
+library(pls)
+library(caret)  # For nearZeroVar()
+library(ggplot2)
+
+# Set number of iterations (different seeds)
+num_iterations <- 20
+
+# Store results
+rmse_pcr_list <- numeric(num_iterations)
+rmse_pls_list <- numeric(num_iterations)
+seeds <- 1:num_iterations  # Store seeds for plotting
+
+# Loop over different seeds
+for (i in 1:num_iterations) {
+  set.seed(seeds[i])  # Set different seed
+  
+  # Split data into training (80%) and testing (20%)
+  trainfold <- data_train %>% sample_frac(size = 0.80)
+  testfold  <- setdiff(data_train, trainfold)
+  
+  # Extract feature matrix (X) and response vector (Y)
+  x_train <- model.matrix(response ~ ., trainfold)[,-1]
+  y_train <- trainfold$response
+  x_test  <- model.matrix(response ~ ., testfold)[,-1]
+  y_test  <- testfold$response
+  
+  # Clean data: Handle NAs and Infinite Values
+  x_train[is.na(x_train)] <- 0  # Replace NAs with 0
+  x_test[is.na(x_test)] <- 0    # Replace NAs with 0
+  x_train[is.infinite(x_train)] <- 0  # Replace Infs with 0
+  x_test[is.infinite(x_test)] <- 0    # Replace Infs with 0
+  
+  # Remove near-zero variance features
+  near_zero_train <- nearZeroVar(x_train)
+  x_train <- x_train[, -near_zero_train]
+  x_test <- x_test[, -near_zero_train]
+  
+  # Perform PCR
+  pcr_model <- pcr(y_train ~ x_train, scale = TRUE, validation = "CV")
+  best_comp_pcr <- which.min(pcr_model$validation$PRESS)  # Select best component
+  y_pred_pcr <- predict(pcr_model, x_test, ncomp = best_comp_pcr)
+  rmse_pcr_list[i] <- sqrt(mean((y_test - y_pred_pcr)^2))
+  
+  # Perform PLS
+  pls_model <- plsr(y_train ~ x_train, scale = TRUE, validation = "CV")
+  best_comp_pls <- which.min(pls_model$validation$PRESS)  # Select best component
+  y_pred_pls <- predict(pls_model, x_test, ncomp = best_comp_pls)
+  rmse_pls_list[i] <- sqrt(mean((y_test - y_pred_pls)^2))
+}
+
+# Convert results into a data frame for plotting
+results_df <- data.frame(
+  Seed = rep(seeds, 2),
+  RMSE = c(rmse_pcr_list, rmse_pls_list),
+  Method = rep(c("PCR", "PLS"), each = num_iterations)
+)
+
+# Plot RMSE values for PCR and PLS across different seeds
+ggplot(results_df, aes(x = Seed, y = RMSE, color = Method, group = Method)) +
+  geom_point(size = 3) +  # Scatter plot
+  geom_line() +  # Line connecting points
+  labs(title = "RMSE Comparison Across Different Seeds",
+       x = "Seed Value",
+       y = "RMSE",
+       color = "Method") +
+  theme_minimal()
+
+```
 
 
 # Plot of testfold observed and predicted values and residuals
