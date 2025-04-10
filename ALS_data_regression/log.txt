@@ -6,3 +6,83 @@
 2025-04-01 23:17:25.726293 Done gbm Runtime: 5923 
 2025-04-01 23:17:25.727217 Doing svmRadial 
 2025-04-01 23:21:35.518944 Done svmRadial Runtime: 250 
+2025-04-04 08:24:44.136952 Training glmnet 
+2025-04-04 08:25:58.100164 Completed glmnet Runtime: 73 seconds 
+2025-04-04 08:25:58.100646 Training ranger 
+2025-04-04 08:40:35.825152 Training glmnet 
+2025-04-04 08:41:10.188033 Completed glmnet Runtime: 34 seconds 
+2025-04-04 08:41:10.188536 Training ranger 
+Warning in ranger training: model fit failed for Fold1.Rep1: mtry=  2, min.node.size=5, splitrule=variance Error in ranger::ranger(dependent.variable.name = ".outcome", data = x,  : 
+  formal argument "min.node.size" matched by multiple actual arguments
+ 
+Training failed for ranger 
+2025-04-04 08:41:10.285371 Training gbm 
+2025-04-04 08:41:53.647721 Completed gbm Runtime: 43 seconds 
+2025-04-04 08:41:53.648219 Training svmRadial 
+2025-04-04 08:42:26.481328 Completed svmRadial Runtime: 33 seconds 
+2025-04-04 08:42:26.481853 Training lm 
+Warning in lm training: prediction from rank-deficient fit; attr(*, "non-estim") has doubtful cases 
+Training failed for lm 
+2025-04-04 09:02:53.532056 Training lm 
+2025-04-04 09:02:57.427723 Completed lm - Runtime: 2 
+2025-04-04 09:02:57.42867 Training glmnet 
+2025-04-04 09:03:14.508388 Completed glmnet - Runtime: 17 
+2025-04-04 09:03:14.511178 Training ranger 
+2025-04-04 09:24:29.10924 Completed ranger - Runtime: 1274 
+2025-04-04 09:24:29.115547 Training gbm 
+2025-04-04 09:26:27.380458 Completed gbm - Runtime: 117 
+2025-04-04 09:26:27.382654 Training svmRadial 
+2025-04-04 09:26:45.594374 Completed svmRadial - Runtime: 18 
+2025-04-05 19:36:33.479643 Training lm 
+2025-04-05 19:36:37.807309 Completed lm - Runtime: 2 
+2025-04-05 19:36:37.807771 Training glmnet 
+2025-04-05 19:44:19.371838 Training lm 
+2025-04-05 19:44:26.840291 Training lm 
+2025-04-05 19:44:37.272158 Training lm 
+2025-04-05 19:44:46.471936 Training lm 
+2025-04-05 19:45:08.762783 Training lm 
+2025-04-05 19:45:23.996341 Training lm 
+2025-04-05 19:46:12.602598 Training lm 
+2025-04-05 19:46:17.380537 Completed lm - Runtime: 2 
+2025-04-05 19:46:17.380791 Training glmnet 
+2025-04-05 19:48:04.572197 Training lm 
+2025-04-05 19:48:09.252341 Completed lm - Runtime: 2 
+2025-04-05 19:48:09.252588 Training glmnet 
+2025-04-05 19:48:57.997567 Completed glmnet - Runtime: 48 
+2025-04-05 19:48:57.998473 Training ranger 
+2025-04-05 20:22:28.220304 Completed ranger - Runtime: 2010 
+2025-04-05 20:22:28.224568 Training gbm 
+2025-04-05 20:32:26.331971 Completed gbm - Runtime: 597 
+2025-04-05 20:32:26.334768 Training svmRadial 
+2025-04-05 20:33:18.87098 Completed svmRadial - Runtime: 52 
+2025-04-05 20:46:25.382 Training lm 
+2025-04-05 20:48:54.174377 Training lm 
+2025-04-05 20:48:59.387543 Completed lm - Runtime: 2 
+2025-04-05 20:48:59.388462 Training glmnet 
+2025-04-05 20:49:51.779182 Completed glmnet - Runtime: 52 
+2025-04-05 20:49:51.779835 Training ranger 
+2025-04-05 21:07:20.660206 Completed ranger - Runtime: 1048 
+2025-04-05 21:07:20.661593 Training gbm 
+2025-04-05 21:15:47.651965 Completed gbm - Runtime: 507 
+2025-04-05 21:15:47.653625 Training svmRadial 
+2025-04-05 21:16:33.395689 Completed svmRadial - Runtime: 46 
+2025-04-06 16:27:33.862127 Training lm 
+2025-04-06 16:27:39.071382 Completed lm - Runtime: 3 
+2025-04-06 16:27:39.072128 Training glmnet 
+2025-04-06 16:28:37.695441 Completed glmnet - Runtime: 58 
+2025-04-06 16:28:37.697446 Training ranger 
+2025-04-06 17:01:52.407806 Completed ranger - Runtime: 1994 
+2025-04-06 17:01:52.410986 Training gbm 
+2025-04-06 17:14:42.653764 Completed gbm - Runtime: 770 
+2025-04-06 17:14:42.655989 Training svmRadial 
+2025-04-06 17:15:27.168472 Completed svmRadial - Runtime: 44 
+2025-04-06 17:23:03.633233 Training lm 
+2025-04-06 17:23:08.781511 Completed lm - Runtime: 2 
+2025-04-06 17:23:08.781766 Training glmnet 
+2025-04-06 17:24:18.055614 Completed glmnet - Runtime: 69 
+2025-04-06 17:24:18.056937 Training ranger 
+2025-04-06 17:55:56.841347 Completed ranger - Runtime: 1898 
+2025-04-06 17:55:56.844635 Training gbm 
+2025-04-06 18:04:21.981551 Completed gbm - Runtime: 505 
+2025-04-06 18:04:21.983414 Training svmRadial 
+2025-04-06 18:04:54.000108 Completed svmRadial - Runtime: 31 

@@ -1,0 +1,325 @@
+---
+title: "Week 11: model averaging"
+author: "Palle Villesen"
+output: 
+  html_document:
+    code_folding: show
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+# Aim of this exercise
+
+ * Try and tune different models more than once
+ * Estimate performance of each model (CV performance)
+ * Compare test error of the stacked models vs. single models
+
+```{r}
+
+library(tidyverse)
+theme_set(theme_classic())
+
+library(caret)
+
+```
+
+# Karmen data regression (age)
+
+## Reading and reformatting data
+
+
+```{r}
+
+df  <- read_rds("karmen_data_with_sex_and_age.rds") 
+compounds  <- df %>% select(-age,-sex) %>% names()
+
+(age_data <- df %>% select(age, all_of(compounds)))
+
+rm(df)
+
+```
+
+## Create a training/test split
+
+```{r}
+
+set.seed(0)
+
+train <- caret::createDataPartition(y = age_data$age, p = 0.8, times = 1, list = F)
+
+age_data[train,]
+age_data[-train,]
+
+```
+
+# Todays exercise
+
+## Tune many models
+
+Now using the caret exercises from last week it should be possible for you to tune 6 models:
+
+2 knn
+2 glmnet
+2 randomforests
+
+You are welcome to add more if you have time and energy!
+
+There is a trick so you can fit many models, get the CV RMSE and save everything including the fitted models!
+
+
+
+result <- tibble(method=c("knn", "glmnet"), rmse=NA, runtime=NA, model=list(NA))
+
+# The list() makes it possible to store large stuff in a "cell" in a tibble.
+
+```{r}
+
+# Function to train models
+train_model <- function(method, train_data, seed = 42, tuneLength = 5) {
+  set.seed(seed)
+  start_time <- Sys.time()
+  
+  # Create cross-validation settings
+  ctrl <- trainControl(
+    method = "cv",
+    number = 5,
+    verboseIter = FALSE
+  )
+  
+  # Different tuning grids based on method
+  if (method == "knn") {
+    grid <- expand.grid(k = seq(1, 20, length.out = tuneLength))
+  } else if (method == "glmnet") {
+    grid <- expand.grid(
+      alpha = c(0, 0.5, 1),
+      lambda = seq(0.0001, 1, length.out = tuneLength)
+    )
+  } else if (method == "rf") {
+    grid <- expand.grid(
+      mtry = seq(2, min(20, ncol(train_data) - 1), length.out = tuneLength)
+    )
+  }
+  
+  # Train the model
+  fit <- train(
+    age ~ .,
+    data = train_data,
+    method = method,
+    trControl = ctrl,
+    tuneGrid = grid,
+    preProcess = c("center", "scale")
+  )
+  
+  end_time <- Sys.time()
+  runtime <- as.numeric(difftime(end_time, start_time, units = "secs"))
+  
+  return(list(
+    model = fit,
+    rmse = min(fit$results$RMSE),
+    runtime = runtime
+  ))
+}
+
+# Train multiple models with different seeds and configurations
+train_all_models <- function(train_data) {
+  result <- tibble(
+    method = c("knn", "knn", "glmnet", "glmnet", "rf", "rf"),
+    seed = c(1, 2, 3, 4, 5, 6),
+    tuneLength = c(10, 15, 10, 15, 5, 10),
+    rmse = NA_real_,
+    runtime = NA_real_,
+    model = list(NA)
+  )
+  
+  for (i in 1:nrow(result)) {
+    cat("Training model", i, "of", nrow(result), ":", result$method[i], "with seed", result$seed[i], "\n")
+    model_result <- train_model(
+      method = result$method[i],
+      train_data = train_data,
+      seed = result$seed[i],
+      tuneLength = result$tuneLength[i]
+    )
+    
+    result$model[[i]] <- model_result$model
+    result$rmse[i] <- model_result$rmse
+    result$runtime[i] <- model_result$runtime
+  }
+  
+  return(result)
+}
+```
+
+```{r}
+# Train all models
+train_data <- age_data[train, ]
+test_data <- age_data[-train, ]
+model_results <- train_all_models(train_data)
+```
+
+```{r}
+# Evaluate individual models on test data
+model_results <- model_results %>%
+  mutate(test_rmse = map_dbl(model, ~RMSE(predict(.x, test_data), test_data$age)))
+
+# Display results
+model_results %>%
+  select(method, seed, tuneLength, rmse, test_rmse, runtime) %>%
+  arrange(test_rmse)
+```
+
+```{r}
+# Function for outer cross-validation with model stacking
+stack_models_cv <- function(data, folds = 5) {
+  # Create folds for outer CV
+  set.seed(123)
+  fold_indices <- createFolds(data$age, k = folds, list = TRUE, returnTrain = FALSE)
+  
+  # Storage for results
+  cv_results <- tibble(
+    fold = 1:folds,
+    single_best_rmse = NA_real_,
+    stacked_rmse = NA_real_
+  )
+  
+  for (fold in 1:folds) {
+    cat("Processing fold", fold, "of", folds, "\n")
+    
+    # Split data for this fold
+    test_indices <- fold_indices[[fold]]
+    cv_train <- data[-test_indices, ]
+    cv_test <- data[test_indices, ]
+    
+    # Train individual models on this fold's training data
+    fold_models <- train_all_models(cv_train)
+    
+    # Generate predictions from each model for the test data
+    predictions <- map(fold_models$model, ~predict(.x, cv_test))
+    predictions_df <- as.data.frame(do.call(cbind, predictions))
+    colnames(predictions_df) <- paste0("pred_", 1:ncol(predictions_df))
+    
+    # Add actual values
+    predictions_df$age <- cv_test$age
+    
+    # Train a meta-model on the predictions
+    meta_model <- train(
+      age ~ .,
+      data = predictions_df,
+      method = "lm",
+      trControl = trainControl(method = "cv", number = 3)
+    )
+    
+    # Calculate RMSE for the stacked model
+    stacked_preds <- predict(meta_model, predictions_df)
+    stacked_rmse <- RMSE(stacked_preds, cv_test$age)
+    
+    # Find the best single model RMSE
+    individual_rmses <- map_dbl(fold_models$model, ~RMSE(predict(.x, cv_test), cv_test$age))
+    best_rmse <- min(individual_rmses)
+    
+    # Store results
+    cv_results$single_best_rmse[fold] <- best_rmse
+    cv_results$stacked_rmse[fold] <- stacked_rmse
+  }
+  
+  return(cv_results)
+}
+
+# Run cross-validation with stacking
+cv_stack_results <- stack_models_cv(age_data)
+
+# Summarize cross-validation results
+cv_stack_summary <- cv_stack_results %>%
+  summarize(
+    mean_single_best_rmse = mean(single_best_rmse),
+    sd_single_best_rmse = sd(single_best_rmse),
+    mean_stacked_rmse = mean(stacked_rmse),
+    sd_stacked_rmse = sd(stacked_rmse),
+    improvement_pct = (mean_single_best_rmse - mean_stacked_rmse) / mean_single_best_rmse * 100
+  )
+
+# Display CV results
+print(cv_stack_results)
+print(cv_stack_summary)
+```
+
+
+```{r}
+# Generate predictions from each model for the test data
+test_predictions <- map(model_results$model, ~predict(.x, test_data))
+test_predictions_df <- as.data.frame(do.call(cbind, test_predictions))
+colnames(test_predictions_df) <- paste0("pred_", 1:ncol(test_predictions_df))
+
+# Train a meta-model on the training data predictions
+train_predictions <- map(model_results$model, ~predict(.x, train_data))
+train_predictions_df <- as.data.frame(do.call(cbind, train_predictions))
+colnames(train_predictions_df) <- paste0("pred_", 1:ncol(train_predictions_df))
+train_predictions_df$age <- train_data$age
+
+# Train the meta-model
+meta_model <- train(
+  age ~ .,
+  data = train_predictions_df,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 5)
+)
+
+# Calculate RMSE for the stacked model on test data
+test_predictions_df$age <- test_data$age
+stacked_preds <- predict(meta_model, test_predictions_df)
+stacked_test_rmse <- RMSE(stacked_preds, test_data$age)
+
+# Calculate individual model RMSEs on test data
+individual_test_rmses <- map_dbl(model_results$model, ~RMSE(predict(.x, test_data), test_data$age))
+best_individual_rmse <- min(individual_test_rmses)
+
+# Final comparison
+final_comparison <- tibble(
+  model = c(paste0(model_results$method, "_", model_results$seed), "Stacked Model"),
+  test_rmse = c(individual_test_rmses, stacked_test_rmse)
+) %>%
+  arrange(test_rmse)
+
+# Display final results
+print(final_comparison)
+
+# Visualize results
+ggplot(final_comparison, aes(x = reorder(model, -test_rmse), y = test_rmse)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Model", y = "Test RMSE", title = "Model Performance Comparison")
+```
+
+
+Then you can get the fully trained models back:
+
+```r
+predict(result$model[[i]], newdata = age_data[-train,])
+```
+
+## Combine models
+
+When you have your models and CV RMSE I I would like you to calculate the test error for these models individually and try two ways on stacking them:
+
+1. Use equal weight to all models (weights should sum to 1)
+2. Weight by CV performance (weights should sum to 1)
+
+A trick for the second part is to do:
+
+```{r}
+
+```
+
+
+result <- result %>% 
+              mutate(weight = 1/rmse^2) %>%
+              mutate(weight = weight/sum(weight))
+
+```
+
+Where we use 1/MSE (MSE = RMSE^2) as weight. The lower MSE the higher weight.
+
+In the end you should have 6 different test errors to compare, 1 for each model individually and 2 for averaging.
+
+
+---

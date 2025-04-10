@@ -45,32 +45,36 @@ dim(data_train)
 GETTING TRAINING AND VALIDATION SETS:
 
 ```{r}
-# Dividir en conjunto de entrenamiento (80%) y prueba (20%)
+# First, create the train and test fold properly
 set.seed(0)
-# Convert data to matrix format (excluding intercept column)
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Create the model matrices
 x_train <- model.matrix(response ~ ., trainfold)[,-1]
-x_test  <- model.matrix(response ~ ., testfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
 
 # Convert response variable to numeric vectors
 y_train <- trainfold$response
-y_test  <- testfold$response
+y_test <- testfold$response
 
-# Convert data into XGBoost DMatrix format (faster and optimized)
+# Convert data into XGBoost DMatrix format
 dtrain <- xgb.DMatrix(data = x_train, label = y_train)
-dtest  <- xgb.DMatrix(data = x_test, label = y_test)
+dtest <- xgb.DMatrix(data = x_test, label = y_test)
 ```
 
 
 HYPERPARAMETER GRID
 ```{r}
-tune_grid <- expand.grid(
-  nrounds = c(100),         # Reduce to 2 values
-  eta = c(0.05, 0.1),           # Fewer values
-  max_depth = c(6),          # Shallower trees
-  gamma = c(0.1),            
-  colsample_bytree = c(0.8), 
-  min_child_weight = c(1, 3),    
-  subsample = c(0.8)         
+tune_grid_efficient <- expand.grid(
+  nrounds = c(100, 300),
+  eta = c(0.05, 0.1),
+  max_depth = c(3, 6),
+  gamma = c(0.1, 0.5),
+  colsample_bytree = c(0.7, 0.9),
+  min_child_weight = c(1, 3),
+  subsample = c(0.8)
 )
 
 
@@ -103,10 +107,10 @@ params <- list(
   objective = "reg:squarederror",
   eta = best_params$eta,
   max_depth = best_params$max_depth,
+  gamma = best_params$gamma,
   subsample = best_params$subsample,
   colsample_bytree = best_params$colsample_bytree,
-  lambda = best_params$lambda,
-  alpha = best_params$alpha
+  min_child_weight = best_params$min_child_weight
 )
 
 # Train final model

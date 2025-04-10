@@ -1,30 +1,343 @@
 ---
-title: "Multiple_saving_ensemble"
+title: "Outliers_removal_enhanced"
 author: "Pablo Bondia"
 date: "2025-04-03"
 output: html_document
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+SUMMARY: MODELS MAKE MISTAKES IN THE SAME PLACES,NO POINT ON MAKING STACKING OF MODELS
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+I TRIED REMOVING OULTIERS(GLMNET) AND RETRAIN, DOESNT HELP.
 
-```{r cars}
-summary(cars)
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ranger)
+library(gbm)
+library(e1071)
+library(Metrics)
+
+# Load and prepare data
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds") %>% 
+  tbl_df() %>% 
+  rename(response = dFRS)
+
+# Split data
+data_train <- df %>% filter(!is.na(response))
+data_predict <- df %>% filter(is.na(response))
+
+# Train/test split
+set.seed(0)
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Model matrices
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
+y_train <- trainfold$response
+y_test <- testfold$response
+
+# TrainControl setup
+trControl <- trainControl(method = "cv", number = 5)
+
+# Define models to train (including linear regression)
+models_to_run <- c("lm", "glmnet", "ranger", "gbm", "svmRadial")
+
+# Prepare results dataframe
+result <- data.frame(
+  method = models_to_run,
+  accuracy_train = NA,
+  accuracy_test = NA,
+  runtime = NA,
+  stringsAsFactors = FALSE
+)
+
+# For storing predictions
+all_predictions <- data.frame(row_id = seq_along(y_test))
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+```{r}
+# Loop over models
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training", method, "\n"), file = "log.txt", append = TRUE)
+  start_time <- as.integer(Sys.time())
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+  fit <- train(x = x_train,
+               y = y_train,
+               method = method,
+               tuneLength = 10,
+               trControl = trControl)
+
+  runtime <- as.integer(Sys.time()) - start_time
+  test_preds <- predict(fit, newdata = x_test)
+  test_rmse <- rmse(y_test, test_preds)
+
+  # Save metrics
+  result$accuracy_train[i] <- mean(fit$resample$RMSE)
+  result$accuracy_test[i] <- test_rmse
+  result$runtime[i] <- runtime
+
+  # Save model and predictions
+  saveRDS(fit, file = paste0("model_", method, ".rds"))
+  saveRDS(test_preds, file = paste0("predictions_", method, ".rds"))
+
+  # Add to prediction matrix
+  all_predictions[[method]] <- test_preds
+
+  cat(paste(Sys.time(), "Completed", method, "- Runtime:", runtime, "\n"), file = "log.txt", append = TRUE)
+}
+
+# Save all results and prediction matrix
+saveRDS(result, "model_results.rds")
+write_csv(result, "model_results.csv")
+saveRDS(all_predictions, "all_test_predictions.rds")
+
+# Print comparison results
+print(result)
+
+# ---- 🔍 Analyze correlation between predictions ----
+correlation_matrix <- cor(all_predictions[,-1])
+print("Prediction Correlation Matrix:")
+print(round(correlation_matrix, 3))
+
+# Optional: Heatmap of correlations
+library(corrplot)
+corrplot(correlation_matrix, method = "color", tl.col = "black", addCoef.col = "black")
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r}
+# Required for variable importance extraction
+library(caret)
+library(tidyverse)
+
+# Models you've trained
+models_to_run <- c("lm", "glmnet", "ranger", "gbm", "svmRadial")
+
+# Load models and extract variable importance
+importance_list <- list()
+
+for (method in models_to_run) {
+  model_path <- paste0("model_", method, ".rds")
+  if (file.exists(model_path)) {
+    fit <- readRDS(model_path)
+
+    # Try to get variable importance
+    imp <- try(varImp(fit, scale = TRUE), silent = TRUE)
+
+    if (!inherits(imp, "try-error")) {
+      df <- imp$importance %>%
+        rownames_to_column("Variable") %>%
+        arrange(desc(Overall)) %>%
+        mutate(Model = method)
+      importance_list[[method]] <- df
+    } else {
+      cat(paste("⚠️ Variable importance not available for", method, "\n"))
+    }
+  }
+}
+
+# Combine into one big dataframe
+importance_df <- bind_rows(importance_list)
+
+# Save for inspection
+write_csv(importance_df, "variable_importance_all_models.csv")
+saveRDS(importance_df, "variable_importance_all_models.rds")
+
+# Show top variables from each model
+top_vars <- importance_df %>%
+  group_by(Model) %>%
+  top_n(10, wt = Overall) %>%
+  arrange(Model, desc(Overall))
+
+print(top_vars)
+
+```
+
+```{r}
+# Load predictions
+glmnet_preds <- readRDS("predictions_glmnet.rds")
+svm_preds    <- readRDS("predictions_svmRadial.rds")
+
+# Compute absolute errors
+errors_df <- tibble(
+  id = seq_along(y_test),
+  true = y_test,
+  glmnet_error = abs(glmnet_preds - y_test),
+  svm_error = abs(svm_preds - y_test)
+)
+
+# Who predicted better on each point?
+errors_df <- errors_df %>%
+  mutate(better_model = case_when(
+    glmnet_error < svm_error ~ "glmnet",
+    glmnet_error > svm_error ~ "svmRadial",
+    TRUE ~ "tie"
+  ))
+
+# Count how often each model was better
+table(errors_df$better_model)
+
+# Plot differences in error
+library(ggplot2)
+ggplot(errors_df, aes(x = glmnet_error - svm_error)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(title = "Error Difference (glmnet - svmRadial)",
+       x = "Error Difference", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+# Create a new data frame of errors for each model
+error_matrix <- all_predictions %>%
+  select(-row_id) %>%
+  mutate(across(everything(), ~ . - y_test))
+
+error_correlation_matrix <- cor(error_matrix)
+print("Correlation Matrix of Prediction Errors:")
+print(round(error_correlation_matrix, 3))
+
+library(corrplot)
+corrplot(error_correlation_matrix, 
+         method = "color", 
+         tl.col = "black", 
+         addCoef.col = "black", 
+         title = "Error Correlation Heatmap",
+         mar = c(0,0,1,0))
+
+
+```
+
+```{r}
+plot_df <- tibble(
+  true = y_test,
+  glmnet = glmnet_preds,
+  svm = svm_preds
+)
+
+ggplot(plot_df, aes(x = true)) +
+  geom_point(aes(y = glmnet), color = "blue", alpha = 0.5) +
+  geom_point(aes(y = svm), color = "red", alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(y = "Predicted", title = "Predicted vs True Values (glmnet = blue, svm = red)") +
+  theme_minimal()
+
+```
+```{r}
+plot(y_test, y_test - glmnet_preds, main = "Residuals vs True (GLMNet)", ylab = "Residual", xlab = "True Response")
+abline(h = 0, col = "red")
+
+```
+```{r}
+boxplot(error_matrix, main = "Boxplot of Prediction Errors")
+
+```
+
+
+```{r}
+# Train glmnet model
+glmnet_fit <- train(x = x_train, y = y_train, method = "glmnet", trControl = trControl)
+
+# Get residuals
+glmnet_preds <- predict(glmnet_fit, newdata = x_train)
+residuals_glmnet <- y_train - glmnet_preds
+
+# Identify outliers using IQR
+Q1 <- quantile(residuals_glmnet, 0.25)
+Q3 <- quantile(residuals_glmnet, 0.75)
+IQR_res <- Q3 - Q1
+lower_bound <- Q1 - 1.5 * IQR_res
+upper_bound <- Q3 + 1.5 * IQR_res
+
+# Outlier indices
+outlier_idx <- which(residuals_glmnet < lower_bound | residuals_glmnet > upper_bound)
+
+# Show summary
+cat("Outliers removed based on glmnet residuals:", length(outlier_idx), "\n")
+print(head(trainfold[outlier_idx, ], 5))  # optional: show the data
+
+# Remove them
+x_train_clean <- x_train[-outlier_idx, ]
+y_train_clean <- y_train[-outlier_idx]
+
+
+```
+
+
+```{r}
+
+# For storing predictions
+all_predictions_clean <- data.frame(row_id = seq_along(y_test))
+
+# Prepare results dataframe clean
+result_clean <- data.frame(
+  method = models_to_run,
+  accuracy_train = NA,
+  accuracy_test = NA,
+  runtime = NA,
+  stringsAsFactors = FALSE)
+
+# Loop over models
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training", method, "\n"), file = "log.txt", append = TRUE)
+  start_time <- as.integer(Sys.time())
+
+  fit <- train(x = x_train_clean,
+               y = y_train_clean,
+               method = method,
+               tuneLength = 10,
+               trControl = trControl)
+
+  runtime <- as.integer(Sys.time()) - start_time
+  test_preds <- predict(fit, newdata = x_test)
+  test_rmse <- rmse(y_test, test_preds)
+
+  # Save metrics
+  result_clean$accuracy_train[i] <- mean(fit$resample$RMSE)
+  result_clean$accuracy_test[i] <- test_rmse
+  result_clean$runtime[i] <- runtime
+
+  # Save model and predictions
+  saveRDS(fit, file = paste0("model_", method, ".rds"))
+  saveRDS(test_preds, file = paste0("predictions_", method, ".rds"))
+
+  # Add to prediction matrix
+  all_predictions_clean[[method]] <- test_preds
+
+  cat(paste(Sys.time(), "Completed", method, "- Runtime:", runtime, "\n"), file = "log.txt", append = TRUE)
+}
+
+# Save all results and prediction matrix
+saveRDS(result, "model_results.rds")
+write_csv(result, "model_results.csv")
+saveRDS(all_predictions, "all_test_predictions.rds")
+
+# Print comparison results
+print(result_clean)
+
+# ---- 🔍 Analyze correlation between predictions ----
+correlation_matrix <- cor(all_predictions_clean[,-1])
+print("Prediction Correlation Matrix:")
+print(round(correlation_matrix, 3))
+
+# Optional: Heatmap of correlations
+library(corrplot)
+corrplot(correlation_matrix, method = "color", tl.col = "black", addCoef.col = "black")
+
+```
+

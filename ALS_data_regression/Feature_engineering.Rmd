@@ -55,3 +55,14 @@ x_test <- model.matrix(response ~ ., testfold)[,-1]
 # Convert response variable to numeric vectors
 y_train <- trainfold$response
 y_test <- testfold$response
+```
+
+
+Scale, log-transform to handle skewed data
+
+Feature creation/transformation
+
+Remove correlated features-similar to doing pca
+
+Remove outliers
+
