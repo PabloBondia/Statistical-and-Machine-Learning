@@ -20,7 +20,7 @@ library(e1071)  # For SVM
 library(Metrics)  # For RMSE evaluation
 
 # Load the data
-df <- read_rds(file = "ALS_progression_rate.1822x370.rds")  %>% tbl_df()
+df <- read_rds("ALS_progression_rate.1822x370.rds") %>% tibble::as_tibble()
 
 # Rename the response variable
 df <- df %>% rename(response = dFRS)
@@ -41,6 +41,80 @@ dim(data_train)
 
 ```
 
+
+```{r}
+# Summary statistics of response variable
+summary(data_train$response)
+
+# Distribution of response variable
+hist(data_train$response, main="Distribution of Response Variable", xlab="Response")
+
+# Check for missing values
+colSums(is.na(data_train)) %>% sort(decreasing=TRUE) %>% head(20)
+
+# Check for zero variance predictors
+near_zero_var <- nearZeroVar(data_train, saveMetrics = TRUE)
+sum(near_zero_var$nzv)  # Number of near-zero variance predictors
+
+hist(data_train$response, breaks = 50, main = "Response Distribution", col = "steelblue")
+
+e1071::skewness(data_train$response)
+
+
+```
+
+The data is very skewed:
+
+
+IM GONNA TRY JONSONS TRANSF:
+
+```{r}
+# Apply Yeo-Johnson transformation using caret
+library(caret)
+
+# Extract response variable
+response_orig <- data_train$response
+
+# Apply transformation
+preproc <- preProcess(as.data.frame(response_orig), method = "YeoJohnson")
+response_trans <- predict(preproc, as.data.frame(response_orig))
+
+# Combine into dataframe for ggplot
+response_df <- tibble(
+  original = response_orig,
+  transformed = response_trans$response_orig)
+
+library(ggplot2)
+
+# Plot transformed response
+ggplot(response_df, aes(x = transformed)) +
+  geom_histogram(aes(y = ..density..), bins = 50, fill = "mediumseagreen", alpha = 0.7, color = "white") +
+  geom_density(color = "darkgreen", size = 1) +
+  labs(title = "Yeo-Johnson Transformed Response",
+       x = "Transformed Response",
+       y = "Density") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+
+
+```{r}
+# Compute a small offset so all values become positive
+offset <- abs(min(data_train$response, na.rm = TRUE)) + 1e-6
+
+# Apply transformation
+data_train <- data_train %>%
+  mutate(response = log1p(response + offset))
+
+```
+
+
 ```{r}
 # Create training and test folds (80-20 split)
 set.seed(0)
@@ -58,11 +132,515 @@ y_test <- testfold$response
 ```
 
 
-Scale, log-transform to handle skewed data
 
-Feature creation/transformation
+```{r}
 
-Remove correlated features-similar to doing pca
+# ---- Log-transform setup ----
+# Offset to make response positive for log1p
+offset <- abs(min(y_train, na.rm = TRUE)) + 1e-6
+y_train_log <- log1p(y_train + offset)
+y_test_orig <- y_test  # keep original for evaluation
 
-Remove outliers
+
+# TrainControl setup
+trControl <- trainControl(method = "cv", number = 5)
+
+# Define models to train
+models_to_run <- c("lm", "glmnet", "ranger", "gbm", "svmRadial")
+
+# Prepare results dataframe
+result <- data.frame(
+  method = models_to_run,
+  accuracy_train = NA,
+  accuracy_test = NA,
+  runtime = NA,
+  stringsAsFactors = FALSE
+)
+
+# For storing inverse-transformed predictions
+all_predictions <- data.frame(row_id = seq_along(y_test))
+
+
+# ---- Plotting the original response frequency ----
+ggplot(data.frame(response = y_train), aes(x = response)) +
+  geom_histogram(bins = 50, fill = "blue", alpha = 0.7) +
+  labs(title = "Distribution of Original Response Variable", 
+       x = "Original Response", y = "Frequency") +
+  theme_minimal()
+
+# ---- Plotting the log-transformed response frequency ----
+ggplot(data.frame(response = y_train_log), aes(x = response)) +
+  geom_histogram(bins = 50, fill = "green", alpha = 0.7) +
+  labs(title = "Distribution of Log-Transformed Response Variable", 
+       x = "Log-Transformed Response", y = "Frequency") +
+  theme_minimal()
+```
+
+```{r}
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training", method, "\n"), file = "log.txt", append = TRUE)
+  start_time <- as.integer(Sys.time())
+
+  fit <- train(
+    x = x_train,
+    y = y_train_log,  # train on log-transformed response
+    method = method,
+    tuneLength = 10,
+    trControl = trControl
+  )
+
+  runtime <- as.integer(Sys.time()) - start_time
+
+  # Predict on test set (log scale)
+  test_preds_log <- predict(fit, newdata = x_test)
+
+  # Inverse-transform predictions back to original scale
+  test_preds <- expm1(test_preds_log) - offset
+
+  # Evaluate performance on original response
+  test_rmse <- rmse(y_test_orig, test_preds)
+
+  # Save metrics
+  result$accuracy_train[i] <- mean(expm1(fit$resample$RMSE) - offset)  # Not exact, but gives rough scale idea
+  result$accuracy_test[i] <- test_rmse
+  result$runtime[i] <- runtime
+
+  # Save model and predictions
+  saveRDS(fit, file = paste0("model_", method, ".rds"))
+  saveRDS(test_preds, file = paste0("predictions_", method, ".rds"))
+
+  # Add to prediction matrix
+  all_predictions[[method]] <- test_preds
+
+  cat(paste(Sys.time(), "Completed", method, "- Runtime:", runtime, "\n"), file = "log.txt", append = TRUE)
+}
+
+# Save all results and prediction matrix
+saveRDS(result, "model_results.rds")
+write_csv(result, "model_results.csv")
+saveRDS(all_predictions, "all_test_predictions.rds")
+
+# Print comparison results
+print(result)
+
+# ---- 🔍 Analyze correlation between predictions ----
+correlation_matrix <- cor(all_predictions[,-1])
+print("Prediction Correlation Matrix:")
+print(round(correlation_matrix, 3))
+
+# Optional: Heatmap of correlations
+library(corrplot)
+corrplot(correlation_matrix, method = "color", tl.col = "black", addCoef.col = "black")
+
+```
+
+
+```{r}
+# ---- Actual vs Predicted Plot ----
+ggplot(data.frame(Actual = y_test_orig, Predicted = test_preds), aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.7) +  # Points for actual vs predicted
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +  # Line for perfect prediction
+  labs(title = "Actual vs Predicted: Log-Transformed Model",
+       x = "Actual Response Values", y = "Predicted Response Values") +
+  theme_minimal()
+
+```
+```{r}
+# For log-transformed models
+log_model_rmse <- rmse(y_test_orig, test_preds)
+log_model_mae <- mae(y_test_orig, test_preds)
+log_model_mape <- mape(y_test_orig, test_preds)
+log_model_medae <- median(abs(y_test_orig - test_preds))
+log_model_r2 <- cor(y_test_orig, test_preds)^2
+
+# For non-transformed models
+direct_model_rmse <- rmse(y_test_orig, direct_preds)
+direct_model_mae <- mae(y_test_orig, direct_preds)
+direct_model_mape <- mape(y_test_orig, direct_preds)
+direct_model_medae <- median(abs(y_test_orig - direct_preds))
+direct_model_r2 <- cor(y_test_orig, direct_preds)^2
+
+# Create comparison table
+comparison <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "MedAE", "R^2"),
+  LogTransformed = c(log_model_rmse, log_model_mae, log_model_mape, log_model_medae, log_model_r2),
+  NonTransformed = c(direct_model_rmse, direct_model_mae, direct_model_mape, direct_model_medae, direct_model_r2)
+)
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ranger)
+library(gbm)
+library(e1071)
+library(Metrics)
+library(bestNormalize)  # For Yeo-Johnson transformation
+
+# Load and prepare data
+df <- read_rds(file = "ALS_progression_rate.1822x370.rds") %>% 
+  tbl_df() %>% 
+  rename(response = dFRS)
+
+# Split data
+data_train <- df %>% filter(!is.na(response))
+data_predict <- df %>% filter(is.na(response))
+
+# Train/test split
+set.seed(0)
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Create model matrices (without the response column)
+x_train <- model.matrix(response ~ ., trainfold)[,-1]
+x_test <- model.matrix(response ~ ., testfold)[,-1]
+
+# Convert response variable to numeric vectors
+y_train <- trainfold$response
+y_test <- testfold$response
+y_test_orig <- y_test  # Store original test values for later evaluation
+
+# TrainControl setup
+trControl <- trainControl(method = "cv", number = 5)
+
+# Define models to train
+models_to_run <- c("lm", "glmnet", "ranger", "gbm", "svmRadial")
+
+# ----- RUN MODELS WITHOUT TRANSFORMATION -----
+result_direct <- data.frame(
+  method = models_to_run,
+  accuracy_train = NA,
+  accuracy_test = NA,
+  runtime = NA,
+  stringsAsFactors = FALSE
+)
+
+all_predictions_direct <- data.frame(row_id = seq_along(y_test))
+
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training", method, "without transformation\n"))
+  start_time <- as.integer(Sys.time())
+  
+  fit <- train(
+    x = x_train,
+    y = y_train,  # Original untransformed response
+    method = method,
+    tuneLength = 10,
+    trControl = trControl
+  )
+  
+  runtime <- as.integer(Sys.time()) - start_time
+  test_preds <- predict(fit, newdata = x_test)
+  test_rmse <- rmse(y_test, test_preds)
+  
+  # Save metrics
+  result_direct$accuracy_train[i] <- mean(fit$resample$RMSE)
+  result_direct$accuracy_test[i] <- test_rmse
+  result_direct$runtime[i] <- runtime
+  
+  # Add to prediction matrix
+  all_predictions_direct[[method]] <- test_preds
+}
+
+# Print untransformed results
+print("Results without transformation:")
+print(result_direct)
+
+# ----- RUN MODELS WITH YEO-JOHNSON TRANSFORMATION -----
+
+# Apply Yeo-Johnson transformation to response variable
+set.seed(123)
+yj_obj <- yeojohnson(y_train)
+y_train_yj <- yj_obj$x.t  # Transformed training response
+
+result_yj <- data.frame(
+  method = models_to_run,
+  accuracy_train_yj = NA,  # CV error in transformed scale
+  accuracy_test_orig = NA, # Test error in original scale after back-transformation
+  runtime = NA,
+  stringsAsFactors = FALSE
+)
+
+all_predictions_yj <- data.frame(row_id = seq_along(y_test))
+
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training", method, "with Yeo-Johnson transformation\n"))
+  start_time <- as.integer(Sys.time())
+  
+  fit <- train(
+    x = x_train,
+    y = y_train_yj,  # Yeo-Johnson transformed response
+    method = method,
+    tuneLength = 10,
+    trControl = trControl
+  )
+  
+  runtime <- as.integer(Sys.time()) - start_time
+  
+  # Predict on test set (in transformed scale)
+  test_preds_yj <- predict(fit, newdata = x_test)
+  
+  # Inverse-transform predictions back to original scale
+  test_preds_orig <- predict(yj_obj, newdata = test_preds_yj, inverse = TRUE)
+  
+  # Evaluate performance on original response
+  test_rmse_orig <- rmse(y_test_orig, test_preds_orig)
+  
+  # Save metrics
+  result_yj$accuracy_train_yj[i] <- mean(fit$resample$RMSE)  # In transformed scale
+  result_yj$accuracy_test_orig[i] <- test_rmse_orig          # In original scale
+  result_yj$runtime[i] <- runtime
+  
+  # Add to prediction matrix
+  all_predictions_yj[[method]] <- test_preds_orig
+}
+
+# Print Yeo-Johnson transformed results
+print("Results with Yeo-Johnson transformation (errors in original scale):")
+print(result_yj)
+
+# Compare both approaches
+comparison <- data.frame(
+  method = result_direct$method,
+  rmse_original = result_direct$accuracy_test,
+  rmse_yeojohnson = result_yj$accuracy_test_orig,
+  improvement = (result_direct$accuracy_test - result_yj$accuracy_test_orig) / 
+                 result_direct$accuracy_test * 100  # % improvement
+)
+
+print("Comparison between approaches:")
+print(comparison)
+
+# ----- Analysis of predictions -----
+
+# Correlation between predictions from both approaches
+correlation_comparison <- data.frame(
+  model = models_to_run,
+  correlation = NA
+)
+
+for(i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  correlation_comparison$correlation[i] <- cor(
+    all_predictions_direct[[method]], 
+    all_predictions_yj[[method]]
+  )
+}
+
+print("Correlation between untransformed and Yeo-Johnson predictions:")
+print(correlation_comparison)
+
+# Visualize actual vs predicted for one model (e.g., ranger)
+ranger_comparison <- data.frame(
+  Actual = y_test_orig,
+  Original = all_predictions_direct$ranger,
+  YeoJohnson = all_predictions_yj$ranger
+)
+
+# Save plots
+pdf("model_comparison_plots.pdf")
+
+# 1. Original vs Yeo-Johnson RMSE comparison
+barplot(t(as.matrix(comparison[, c("rmse_original", "rmse_yeojohnson")])), 
+        beside = TRUE, 
+        names.arg = comparison$method,
+        main = "RMSE Comparison: Original vs Yeo-Johnson", 
+        legend.text = c("Original", "Yeo-Johnson"),
+        col = c("darkblue", "darkgreen"))
+
+# 2. Actual vs predicted plot for ranger model
+par(mfrow=c(1,2))
+
+# Original model
+plot(ranger_comparison$Actual, ranger_comparison$Original,
+     main = "Original Model",
+     xlab = "Actual", ylab = "Predicted",
+     pch = 16, col = "darkblue")
+abline(0, 1, col = "red", lty = 2)
+
+# Yeo-Johnson model
+plot(ranger_comparison$Actual, ranger_comparison$YeoJohnson,
+     main = "Yeo-Johnson Model",
+     xlab = "Actual", ylab = "Predicted",
+     pch = 16, col = "darkgreen")
+abline(0, 1, col = "red", lty = 2)
+
+# Reset plot parameters
+par(mfrow=c(1,1))
+
+# 3. Residual plots
+par(mfrow=c(1,2))
+
+# Original model residuals
+residuals_orig <- ranger_comparison$Actual - ranger_comparison$Original
+plot(ranger_comparison$Actual, residuals_orig,
+     main = "Original Model Residuals",
+     xlab = "Actual", ylab = "Residuals",
+     pch = 16, col = "darkblue")
+abline(h = 0, col = "red", lty = 2)
+
+# Yeo-Johnson model residuals
+residuals_yj <- ranger_comparison$Actual - ranger_comparison$YeoJohnson
+plot(ranger_comparison$Actual, residuals_yj,
+     main = "Yeo-Johnson Model Residuals",
+     xlab = "Actual", ylab = "Residuals",
+     pch = 16, col = "darkgreen")
+abline(h = 0, col = "red", lty = 2)
+
+dev.off()
+
+# Save all results
+saveRDS(result_direct, "model_results_original.rds")
+saveRDS(result_yj, "model_results_yeojohnson.rds")
+saveRDS(comparison, "model_comparison.rds")
+saveRDS(yj_obj, "yeojohnson_transformation.rds")  # Save transformation object for future use
+```
+```{r}
+# For ranger model (or any other model you chose to save)
+preds <- readRDS("predictions_comparison_ranger.rds")
+
+# Create data frame for visualization
+comparison_df <- data.frame(
+  Actual = y_test_orig,
+  LogTransformed = preds$log_preds,
+  NonTransformed = preds$direct_preds
+)
+
+# Actual vs Predicted plots
+p1 <- ggplot(comparison_df, aes(x = Actual, y = LogTransformed)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Log-Transformed Model", x = "Actual", y = "Predicted") +
+  theme_minimal()
+
+p2 <- ggplot(comparison_df, aes(x = Actual, y = NonTransformed)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Non-Transformed Model", x = "Actual", y = "Predicted") +
+  theme_minimal()
+
+# Display side by side
+library(gridExtra)
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+CODE WITH THE NEW TRANSFORMATION: 
+
+```{r}
+library(caret)
+library(Metrics)
+library(tidyverse)
+
+# Set seed
+set.seed(0)
+
+# Split into training and test folds
+train_indices <- createDataPartition(data_train$response, p = 0.8, list = FALSE)
+trainfold <- data_train[train_indices, ]
+testfold <- data_train[-train_indices, ]
+
+# Store original response
+y_train_orig <- trainfold$response
+y_test_orig  <- testfold$response
+
+# Apply Yeo-Johnson to the training response
+yj_proc <- preProcess(as.data.frame(y_train_orig), method = "YeoJohnson")
+y_train_yj <- predict(yj_proc, as.data.frame(y_train_orig))[,1]
+
+# Apply same transformation to the test response (for RMSE comparison later)
+y_test_yj <- predict(yj_proc, as.data.frame(y_test_orig))[,1]
+
+# Create model matrices
+x_train <- model.matrix(response ~ ., trainfold)[, -1]
+x_test  <- model.matrix(response ~ ., testfold)[, -1]
+
+# Prepare models and results
+models_to_run <- c("glmnet", "gbm", "ranger")  # Add others as needed
+trControl <- trainControl(method = "cv", number = 5)
+result <- tibble(model = models_to_run,
+                 rmse_orig = NA,
+                 rmse_yj = NA,
+                 runtime_orig = NA,
+                 runtime_yj = NA)
+
+# Store predictions
+all_predictions <- list()
+
+# Train and evaluate each model
+for (i in seq_along(models_to_run)) {
+  method <- models_to_run[i]
+  cat(paste(Sys.time(), "Training model:", method, "\n"))
+
+  # --------- 📦 ORIGINAL SCALE MODEL ---------
+  start_time <- as.integer(Sys.time())
+  fit_orig <- train(
+    x = x_train,
+    y = y_train_orig,
+    method = method,
+    tuneLength = 10,
+    trControl = trControl
+  )
+  runtime_orig <- as.integer(Sys.time()) - start_time
+  preds_orig <- predict(fit_orig, x_test)
+  rmse_orig <- rmse(y_test_orig, preds_orig)
+
+  # --------- 🔁 YEO-JOHNSON MODEL ---------
+  start_time <- as.integer(Sys.time())
+  fit_yj <- train(
+    x = x_train,
+    y = y_train_yj,
+    method = method,
+    tuneLength = 10,
+    trControl = trControl
+  )
+  runtime_yj <- as.integer(Sys.time()) - start_time
+  preds_yj_transformed <- predict(fit_yj, x_test)
+
+  # Inverse-transform predictions back to original scale
+  preds_yj <- predict(yj_proc, data.frame(response = preds_yj_transformed), inverse = TRUE)[,1]
+  rmse_yj <- rmse(y_test_orig, preds_yj)
+
+  # Save results
+  result$rmse_orig[i] <- rmse_orig
+  result$rmse_yj[i] <- rmse_yj
+  result$runtime_orig[i] <- runtime_orig
+  result$runtime_yj[i] <- runtime_yj
+
+  # Store predictions
+  all_predictions[[paste0(method, "_orig")]] <- preds_orig
+  all_predictions[[paste0(method, "_yj")]] <- preds_yj
+
+  # Save models and predictions
+  saveRDS(fit_orig, file = paste0("model_", method, "_orig.rds"))
+  saveRDS(fit_yj, file = paste0("model_", method, "_yj.rds"))
+  saveRDS(preds_orig, file = paste0("predictions_", method, "_orig.rds"))
+  saveRDS(preds_yj, file = paste0("predictions_", method, "_yj.rds"))
+
+  cat(paste(Sys.time(), "Completed", method, "\n"))
+}
+
+# Save results and predictions
+saveRDS(result, "model_comparison_results.rds")
+write_csv(result, "model_comparison_results.csv")
+saveRDS(all_predictions, "all_predictions_both_scales.rds")
+
+# 📊 Print results
+print(result)
+
+# 📈 Correlation matrix (just for YJ models)
+library(corrplot)
+pred_df <- as.data.frame(all_predictions)
+pred_yj_only <- pred_df %>% select(ends_with("_yj"))
+cor_matrix <- cor(pred_yj_only)
+corrplot(cor_matrix, method = "color", tl.col = "black", addCoef.col = "black")
+
+```
+
 
